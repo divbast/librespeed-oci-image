@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+{
+	# container speaks plain HTTP over a trusted network.
+	auto_https off
+	frankenphp
+	log {
+		output stdout
+		format json
+	}
+	# Written by the bootstrap on every start, from env
+	import /tmp/librespeed/caddy/global.caddy
+}
+
+:8080 {
+	root /var/www/librespeed
+
+	# Written by the bootstrap on every start: the routes only some
+	# settings turn on
+	import /tmp/librespeed/caddy/site.caddy
+
+	php_server
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# Internal health listener, meant to stay unpublished. It has nothing to
+# answer yet.
+:8081 {
+	respond 404
+}

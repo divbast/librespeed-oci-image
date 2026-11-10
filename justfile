@@ -24,6 +24,45 @@ setup:
     mise install
     composer install
 
+# Build the image locally
+build:
+    # Docker only auto-discovers `Dockerfile`. Podman finds either
+    # gh's token, when gh is logged in, reaches spc as a secret so its GitHub
+    # API calls escape the unauthenticated rate limit. It never reaches a layer.
+    token="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || true)}"; \
+    if [[ -n "${token}" ]]; then \
+        GITHUB_TOKEN="${token}" {{ ENGINE }} build --secret id=github_token,env=GITHUB_TOKEN \
+            -f Containerfile -t {{ IMAGE }} .; \
+    else \
+        echo "gh is not logged in: building without a GitHub token" >&2; \
+        {{ ENGINE }} build -f Containerfile -t {{ IMAGE }} .; \
+    fi
+
+acceptance:
+    ENGINE={{ ENGINE }} IMAGE={{ IMAGE }} ./test/acceptance.sh
+
+# Build the image, then run the acceptance suite against it
+test: build acceptance
+
+# Write the image
+archive:
+    {{ ENGINE }} image save -o {{ ARCHIVE }} {{ IMAGE }}
+
+# Fail if the archive holds the GitHub token the build was given
+token-check:
+    token="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || true)}"; \
+    if [[ -n "${token}" ]]; then \
+        GITHUB_TOKEN="${token}" ./test/token-leak.sh {{ ARCHIVE }}; \
+    else \
+        echo "gh is not logged in: the build had no token to leak"; \
+    fi
+
+# Fail on any HIGH or CRITICAL vulnerability the published image does not have.
+# While nothing is published, every finding is reported and none fails
+scan:
+    rm -rf {{ LAYOUT }} && mkdir {{ LAYOUT }} && tar xf {{ ARCHIVE }} -C {{ LAYOUT }}
+    ./test/scan.sh {{ LAYOUT }} {{ REPORT }} {{ PUBLISHED }} {{ BASELINE }} {{ SARIF }}
+
 # Verify every action is a SHA. The workflow recipes skip until .github/workflows
 # exists
 actions-check:
@@ -41,6 +80,12 @@ workflow-audit:
     if [[ -d .github/workflows ]]; then GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}" zizmor --persona=auditor .github/workflows; else echo "no workflows yet"; fi
 
 lint: actions-check workflow-audit
+    hadolint Containerfile
+    # BuildKit's own linter
+    docker build --check -f Containerfile .
     # Piped with -r so an empty match is a pass
     git ls-files '*.sh' | xargs -r shellcheck
     reuse lint
+    vendor/bin/phpstan analyse --no-progress
+
+ci: lint test archive token-check scan

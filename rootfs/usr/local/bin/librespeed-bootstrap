@@ -1,0 +1,55 @@
+#!/usr/bin/env php
+<?php
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+
+// There is no shell in this image, so nothing can chain "bootstrap && serve".
+// This program does the bootstrap and then REPLACES ITSELF with the server via
+// pcntl_exec so FrankenPHP inherits PID 1 and receives signals directly.
+
+declare(strict_types=1);
+
+const SERVER_BIN = '/usr/local/bin/frankenphp';
+const CADDYFILE = '/etc/frankenphp/Caddyfile';
+// Everything written per start, on the /tmp tmpfs. The image's own symlinks
+// and the Caddyfile's imports point here.
+const GENERATED_DIR = '/tmp/librespeed';
+
+function fail(string $msg): never {
+    fwrite(STDERR, "librespeed-bootstrap: $msg\n");
+    exit(1);
+}
+
+function info(string $msg): void {
+    fwrite(STDOUT, "librespeed-bootstrap: $msg\n");
+}
+
+foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
+    if (!is_dir($dir) && !@mkdir($dir, 0o700)) {
+        fail("cannot create $dir - is /tmp a tmpfs writable by uid " . getmyuid() . '?');
+    }
+    // mkdir() honours the umask, and a directory left by an earlier start
+    // keeps whatever mode it had.
+    if (!@chmod($dir, 0o700)) {
+        fail("cannot make $dir private to uid " . getmyuid());
+    }
+}
+
+// The Caddyfile imports both files unconditionally, so each must exist even
+// when it has nothing to say.
+$snippets = [
+    'global.caddy' => "# librespeed-bootstrap: no global options\n",
+    'site.caddy' => "# librespeed-bootstrap: no optional routes\n",
+];
+foreach ($snippets as $name => $content) {
+    $path = GENERATED_DIR . "/caddy/$name";
+    if (@file_put_contents($path, $content) === false) {
+        fail("cannot write $path");
+    }
+}
+
+info('ready');
+
+// Replace this process with the server
+pcntl_exec(SERVER_BIN, ['run', '--config', CADDYFILE]);
+fail('pcntl_exec failed to start ' . SERVER_BIN);
