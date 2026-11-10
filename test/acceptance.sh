@@ -1424,6 +1424,16 @@ assert_refused 'TRUSTED_PROXIES that would close the servers block' \
 assert_refused "TRUSTED_PROXIES with Caddy's own private_ranges" \
     "TRUSTED_PROXIES holds 'private_ranges', which is not an IP address or CIDR range" \
     -e TRUSTED_PROXIES=private_ranges
+# A prefix of 0 takes in every address of its family, so every client of it
+# is a trusted proxy. One that writes an address of the other family in
+# X-Forwarded-For, which no such range holds, is counted as that address: a
+# new bucket for every guess
+assert_refused 'TRUSTED_PROXIES=0.0.0.0/0' \
+    "TRUSTED_PROXIES holds '0.0.0.0/0', which takes in every address" -e TRUSTED_PROXIES=0.0.0.0/0
+assert_refused 'TRUSTED_PROXIES=::/0' \
+    "TRUSTED_PROXIES holds '::/0', which takes in every address" -e TRUSTED_PROXIES=::/0
+assert_refused 'TRUSTED_PROXIES with 10.0.0.0/0 among other ranges' \
+    "TRUSTED_PROXIES holds '10.0.0.0/0', which takes in every address" -e 'TRUSTED_PROXIES=192.0.2.1 10.0.0.0/0'
 # What global.caddy holds is each address as PHP writes it, never the
 # variable's own text
 start_served "${TEL_CTR}" -e 'TRUSTED_PROXIES= 10.89.77.0/24,,2001:DB8::/32  192.0.2.1 '

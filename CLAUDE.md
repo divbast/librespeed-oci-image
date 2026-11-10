@@ -200,7 +200,9 @@ breaking change.
   answered before it can take that lock
 - **The client the limit counts is Caddy's `{client_ip}`**: the connection's
   address, or with `TRUSTED_PROXIES`, `X-Forwarded-For` read right to left
-  and strict. `REMOTE_ADDR` and upstream's own address handling stay as they
+  and strict. A range with a prefix of 0 is refused: every client of its
+  family would be a trusted proxy, free to write an address of the other
+  family, which the range does not hold, and be counted as that. `REMOTE_ADDR` and upstream's own address handling stay as they
   are: `getIP_util.php` trusts `Client-IP`, `X-Real-IP`, `X-Forwarded-For`
   and `CF-Connecting-IPv6` from anyone, and the image leaves that alone.
   Rootless Podman hands a container on a user-defined network every

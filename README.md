@@ -230,7 +230,10 @@ so.
 - `STATS_PASSWORD` never reaches the server's environment: the server has
   only its hash.
 - `TRUSTED_PROXIES` takes addresses and ranges and nothing else. Caddy's own
-  shorthands, such as `private_ranges`, stop the start.
+  shorthands, such as `private_ranges`, stop the start, and so does a range
+  of every address, such as `0.0.0.0/0` or `::/0`: every client would then
+  count as a proxy, and could choose the address its failed logins are
+  counted against.
 
 Upstream's own image reads more variables than these. This one reads none
 of the others: `PASSWORD` (here `STATS_PASSWORD`), `MODE`, `WEBPORT`,

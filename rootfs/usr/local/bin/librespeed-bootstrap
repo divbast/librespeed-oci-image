@@ -279,13 +279,23 @@ function proxyRange(string $entry): ?string {
  * CIDR ranges it names. Anything else stops the start, so global.caddy only
  * ever holds addresses PHP itself wrote, never the variable's own text.
  *
+ * So does a range with a prefix of 0, which takes in every address of its
+ * family. Every client of that family is then a trusted proxy, and one that
+ * writes an address of the other family in X-Forwarded-For, which the range
+ * does not hold, is counted as that address: a new bucket for every guess.
+ *
  * @return list<string>
  */
 function validateProxies(string $raw): array {
     $proxies = [];
     foreach (preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $entry) {
-        $proxies[] = proxyRange($entry)
+        $range = proxyRange($entry)
             ?? fail("TRUSTED_PROXIES holds '$entry', which is not an IP address or CIDR range");
+        if (str_ends_with($range, '/0')) {
+            fail("TRUSTED_PROXIES holds '$entry', which takes in every address, so any client could"
+                . ' choose the address its failed logins are counted against');
+        }
+        $proxies[] = $range;
     }
     if ($proxies === []) {
         fail('TRUSTED_PROXIES is set, but names no address');
