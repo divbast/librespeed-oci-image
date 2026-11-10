@@ -991,7 +991,7 @@ assert_eq 403 "${STATUS}" 'POST /results/stats.php?op=login with a wrong passwor
 assert_contains '<form action="stats.php?op=login" method="POST">' 'a wrong password: the form again' \
     printf '%s' "${BODY}"
 buckets=$(failure_buckets "${TEL_CTR}")
-if [[ "${buckets}" =~ ^[0-9a-f.:]+=1$ ]]; then
+if [[ "${buckets}" =~ ^[0-9a-f.:/]+=1$ ]]; then
     pass "the wrong password is recorded (${buckets})"
 else
     fail "the wrong password is recorded: expected '<address>=1', got '${buckets}'"
@@ -1096,7 +1096,7 @@ else
     fail "429 says when to try again: expected Retry-After of 1 to 900 seconds, got '${RETRY_AFTER}'"
 fi
 buckets=$(failure_buckets "${TEL_CTR}")
-if [[ "${buckets}" =~ ^([0-9a-f.:]+)=5$ && "${BASH_REMATCH[1]}" != 203.0.113.* \
+if [[ "${buckets}" =~ ^([0-9a-f.:/]+)=5$ && "${BASH_REMATCH[1]}" != 203.0.113.* \
         && "${BASH_REMATCH[1]}" != 198.51.100.* ]]; then
     pass "one client, keyed on the connection's own address, with five failures (${buckets})"
 else
@@ -1128,7 +1128,7 @@ statuses=$(sort "${WORK}"/parallel-* | tr '\n' ' ')
 assert_eq '403 403 403 403 403 429 429 429 429 429 ' "${statuses}" 'ten wrong passwords at once'
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
-echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust'
+echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust; IPv6 counts per /64'
 "${ENGINE}" network create --subnet "${PROXY_SUBNET}" "${PROXY_NET}" >/dev/null
 "${ENGINE}" volume create "${PROXIED_VOL}" >/dev/null
 "${ENGINE}" run -d --name "${PROXIED_CTR}" "${CONFINE[@]}" --network "${PROXY_NET}" --ip "${PROXIED_IP}" \
@@ -1159,15 +1159,29 @@ for i in 1 2 3 4 5; do
 done
 proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.7' "password=${STATS_PASSWORD_VALUE}"
 assert_eq 429 "${PROXY_STATUS}" 'client A: the right password after five failures'
-proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 2001:db8::1' "password=${STATS_PASSWORD_VALUE}"
-assert_eq 303 "${PROXY_STATUS}" 'client B, 2001:db8::1, through the same proxy: the right password'
+# IPv4 counts per address, and an IPv4-mapped IPv6 address as its IPv4
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.8' "password=${STATS_PASSWORD_VALUE}"
+assert_eq 303 "${PROXY_STATUS}" "203.0.113.8, beside client A: the right password"
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: ::ffff:203.0.113.7' \
+    "password=${STATS_PASSWORD_VALUE}"
+assert_eq 429 "${PROXY_STATUS}" "client A's address written IPv4-mapped, ::ffff:203.0.113.7: the right password"
 # The proxy appends the address it saw. Whatever the client wrote before it
 # is the client's own claim.
 proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.7, 198.51.100.9' \
     "password=${STATS_PASSWORD_VALUE}"
 assert_eq 303 "${PROXY_STATUS}" "client A's address claimed in front of 198.51.100.9: the right password"
+# IPv6 counts per /64, what one subscriber is usually given
+for i in 1 2 3 4 5; do
+    proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 2001:db8::1' "password=wrong-${i}"
+    assert_eq 403 "${PROXY_STATUS}" "client B, 2001:db8::1: wrong password ${i} of 5"
+done
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 2001:db8::2' "password=${STATS_PASSWORD_VALUE}"
+assert_eq 429 "${PROXY_STATUS}" "2001:db8::2, in client B's /64: the right password"
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 2001:db8:0:1::1' \
+    "password=${STATS_PASSWORD_VALUE}"
+assert_eq 303 "${PROXY_STATUS}" '2001:db8:0:1::1, in the next /64: the right password'
 buckets=$(failure_buckets "${PROXIED_CTR}")
-assert_eq '203.0.113.7=5' "${buckets}" "the failures are client A's alone"
+assert_eq $'2001:db8::/64=5\n203.0.113.7=5' "${buckets}" "the failures are client A's and client B's /64's alone"
 "${ENGINE}" rm -f "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1
 "${ENGINE}" network rm -f "${PROXY_NET}" >/dev/null 2>&1
 # Only addresses and CIDR ranges, whatever else is set, and nothing else

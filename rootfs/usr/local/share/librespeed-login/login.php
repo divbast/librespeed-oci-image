@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 const PASSWORD_HASH_FILE = '/data/stats-password.hash';
 const FAILURES_DB = '/data/stats-login.db';
+// The first twelve bytes of an IPv4 address mapped into IPv6, ::ffff:a.b.c.d
+const IPV4_MAPPED_PREFIX = "\0\0\0\0\0\0\0\0\0\0\xff\xff";
 // Five failures for one client inside 900 s, and that client is refused
 // until the oldest of them is 900 s old, even with the right password.
 const FAILURE_LIMIT = 5;
@@ -57,7 +59,7 @@ function redirectToStats(): never
 }
 
 /**
- * The client this attempt counts against: {client_ip} as Caddy resolved it,
+ * The client's address: {client_ip} as Caddy resolved it,
  * from the connection, or from X-Forwarded-For only when that connection is
  * from a proxy TRUSTED_PROXIES names. Caddy sets it as an environment
  * variable, which FrankenPHP registers after every request header, and a
@@ -71,6 +73,31 @@ function client(): string
     }
 
     return $client;
+}
+
+/**
+ * What failures are counted against: an IPv4 address alone, an IPv6 address
+ * by its /64, which is what one subscriber is usually given and holds more
+ * addresses than any limit could count, and an IPv4-mapped IPv6 address as
+ * the IPv4 address it is.
+ */
+function bucket(string $address): string
+{
+    $packed = inet_pton($address);
+    if ($packed === false) {
+        throw new RuntimeException("'$address' is not an IP address");
+    }
+    if (strlen($packed) === 16 && str_starts_with($packed, IPV4_MAPPED_PREFIX)) {
+        $packed = substr($packed, 12);
+    }
+    $bucket = strlen($packed) === 4
+        ? inet_ntop($packed)
+        : inet_ntop(substr($packed, 0, 8) . str_repeat("\0", 8));
+    if ($bucket === false) {
+        throw new RuntimeException("cannot write '$address' back as an address");
+    }
+
+    return strlen($packed) === 4 ? $bucket : "$bucket/64";
 }
 
 function passwordHash(): string
@@ -143,7 +170,7 @@ function login(): never
         redirectToStats();
     }
 
-    $client = client();
+    $client = bucket(client());
     $hash = passwordHash();
     $pdo = failures();
 
