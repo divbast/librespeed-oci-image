@@ -398,6 +398,55 @@ STATS_PATHS=(
     '/backend/getIP.php/../../results/stats.php?x=;&op=login'
 )
 
+# Paths that start at stats.php and resolve to another script, each beside
+# that script's own path. Raw, such a path would split at its first .php and
+# run stats.php, with whatever was posted to it.
+STATS_EXITS=(
+    '/results/stats.php/../../backend/getIP.php?op=login /backend/getIP.php?op=login'
+    '/results/stats.php/%2e%2e/%2e%2e/backend/getIP.php?op=login /backend/getIP.php?op=login'
+    '/results/stats.php/..%2f..%2fbackend/getIP.php?op=login /backend/getIP.php?op=login'
+    '/RESULTS/STATS.PHP/../../backend/getIP.php?op=login /backend/getIP.php?op=login'
+    '/results/stats.php/.%2e/.%2e/backend/empty.php?op=login /backend/empty.php?op=login'
+    '/results/stats.php/../json.php?op=login&id=1 /results/json.php?op=login&id=1'
+    '/results/stats.php/%2e%2e/json.php?op=login&id=1 /results/json.php?op=login&id=1'
+    '/results/stats.php/../../results/json.php?op=login&id=1 /results/json.php?op=login&id=1'
+    '/results/stats.php/../telemetry.php?op=login /results/telemetry.php?op=login'
+    '/results/stats.php/%2E%2E/telemetry.php?op=login /results/telemetry.php?op=login'
+    '/results/stats.php/../sanitycheck.php?op=login /results/sanitycheck.php?op=login'
+)
+# Upstream's stats page and form, and login.php's every answer, carry it
+STATS_TITLE='<title>LibreSpeed - Stats</title>'
+
+# One request as assert_leaves_stats sends it: the body, with any id
+# telemetry.php hands out made N, then the status
+stats_exit_request() {
+    local base="${1}" method="${2}" path="${3}" password="${4}"
+    if [[ "${method}" == POST ]]; then
+        curl -s -g --path-as-is --max-time 10 -w '\n%{http_code}' -H "X-Forwarded-For: ${DOTSEG_CLIENT}" \
+            --data-urlencode "password=${password}" "${base}${path}"
+    else
+        curl -s -g --path-as-is --max-time 10 -w '\n%{http_code}' -H "X-Forwarded-For: ${DOTSEG_CLIENT}" \
+            "${base}${path}"
+    fi | sed 's/^id [0-9]*$/id N/'
+}
+
+# A path out of stats.php is answered by the script it resolves to, exactly
+# as that script answers when asked directly, or it is refused. Neither
+# stats.php nor its login ever answers it.
+assert_leaves_stats() {
+    local base="${1}" method="${2}" path="${3}" target="${4}" password="${5}" got want status
+    got=$(stats_exit_request "${base}" "${method}" "${path}" "${password}")
+    want=$(stats_exit_request "${base}" "${method}" "${target}" "${password}")
+    status=${got##*$'\n'}
+    if [[ "${got}" == *"${STATS_TITLE}"* ]]; then
+        fail "${method} ${path}: stats.php or its login answered (${status})"
+    elif [[ "${status}" == 400 || "${status}" == 404 ]]; then
+        pass "${method} ${path} is refused (${status})"
+    else
+        assert_eq "${want}" "${got}" "${method} ${path} runs ${target%%\?*}"
+    fi
+}
+
 # POST a password to a stats URL as upstream's login form does, with the
 # cookie jar given. Sets STATUS, LOCATION, RETRY_AFTER, SENT (the bytes of
 # the body) and BODY.
@@ -890,6 +939,13 @@ for path in "${STATS_PATHS[@]}" /results/login.php /login.php; do
     assert_status 404 "POST ${path}" -g --path-as-is --data-urlencode "password=${STATS_PASSWORD_VALUE}" \
         "${TEL_BASE}${path}"
 done
+# Nor does a path that starts at stats.php run it on its way elsewhere
+for pair in "${STATS_EXITS[@]}"; do
+    read -r path target <<<"${pair}"
+    for method in GET POST; do
+        assert_leaves_stats "${TEL_BASE}" "${method}" "${path}" "${target}" "${STATS_PASSWORD_VALUE}"
+    done
+done
 hash=$(php_in "${TEL_CTR}" 'echo file_exists("/data/stats-password.hash") ? "present" : "absent";')
 assert_eq absent "${hash}" 'no /data/stats-password.hash'
 # Set while telemetry is off, it is named and ignored
@@ -993,6 +1049,14 @@ if [[ "${secret}" =~ ^[0-9a-f]{64}$ ]]; then
 else
     fail "upstream's stats_password: expected 64 hex digits, got '${secret}'"
 fi
+# and a path that starts at stats.php and leaves it never runs it, even
+# posting that same value
+for pair in "${STATS_EXITS[@]}"; do
+    read -r path target <<<"${pair}"
+    for method in GET POST; do
+        assert_leaves_stats "${TEL_BASE}" "${method}" "${path}" "${target}" "${secret}"
+    done
+done
 probe "${TEL_CTR}" age-failures 901
 
 # Written on every start: a new password replaces the old at once. bcrypt
