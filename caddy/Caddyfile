@@ -7,6 +7,14 @@
 	log {
 		output stdout
 		format json
+		exclude http.handlers.php
+	}
+	# PHP's error log, which FrankenPHP writes as the php handler. php.ini
+	# lets only real errors through.
+	log php {
+		output stderr
+		format json
+		include http.handlers.php
 	}
 	# Written by the bootstrap on every start, from env
 	import /tmp/librespeed/caddy/global.caddy

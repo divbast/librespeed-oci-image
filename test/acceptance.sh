@@ -275,14 +275,25 @@ probe "${INTERNAL_CTR}" probe-egress
 "${ENGINE}" rm -f "${INTERNAL_CTR}" >/dev/null 2>&1
 "${ENGINE}" network rm -f "${INTERNAL_NET}" >/dev/null 2>&1
 
-echo '== 4. PHP refuses URL streams, keeps errors off the page and bodies off /tmp'
+echo '== 4. PHP refuses URL streams, logs real errors to stderr only and keeps bodies off /tmp'
 if ini=$("${ENGINE}" exec "${CTR}" "${PHP_BIN}" php-cli "${PROBE}" php-ini 2>&1) \
         && jq -e 'type == "object"' >/dev/null 2>&1 <<<"${ini}"; then
     allow_url_fopen=$(jq -r '.allow_url_fopen' <<<"${ini}")
     display_errors=$(jq -r '.display_errors' <<<"${ini}")
+    log_errors=$(jq -r '.log_errors' <<<"${ini}")
+    error_log=$(jq -r '.error_log' <<<"${ini}")
+    error_reporting=$(jq -r '.error_reporting | join(" ")' <<<"${ini}")
     post_max_size=$(jq -r '.post_max_size_bytes' <<<"${ini}")
     assert_eq false "${allow_url_fopen}" 'allow_url_fopen'
     assert_eq false "${display_errors}" 'display_errors'
+    assert_eq true "${log_errors}" 'log_errors'
+    # Unset, so PHP hands each line to FrankenPHP's logger: uid 65532 cannot
+    # open /dev/stderr, and a file would keep errors out of the container log
+    assert_eq '' "${error_log}" 'error_log is unset'
+    # Real errors and uncaught exceptions, which are E_ERROR, and nothing a
+    # client could raise by the thousand: no warning, notice or deprecation
+    assert_eq 'E_ERROR E_PARSE E_CORE_ERROR E_COMPILE_ERROR E_USER_ERROR E_RECOVERABLE_ERROR' \
+        "${error_reporting}" 'error_reporting'
     # PHP keeps a body it reads in memory up to 16 KiB and writes the rest
     # to /tmp. It reads none bigger than post_max_size, unless that is 0,
     # which lifts the limit altogether.
@@ -293,6 +304,19 @@ if ini=$("${ENGINE}" exec "${CTR}" "${PHP_BIN}" php-cli "${PROBE}" php-ini 2>&1)
     fi
 else
     fail "php-ini printed no JSON object: ${ini}"
+fi
+# FrankenPHP logs PHP's errors as the php handler. The server's own config,
+# as the server adapts it, sends that logger to stderr and keeps it out of
+# the default log on stdout.
+if logging=$("${ENGINE}" exec "${CTR}" "${PHP_BIN}" adapt --config /etc/frankenphp/Caddyfile 2>/dev/null \
+        | jq -c '.logging.logs
+            | {php: [to_entries[] | select((.value.include // []) | index("http.handlers.php")) | .value.writer.output],
+               default: .default.writer.output,
+               default_excludes_php: ((.default.exclude // []) | index("http.handlers.php") != null)}' 2>&1); then
+    assert_eq '{"php":["stderr"],"default":"stdout","default_excludes_php":true}' "${logging}" \
+        "PHP's error log goes to stderr, and the rest of the server's log to stdout"
+else
+    fail "PHP's error log goes to stderr, not stdout: could not adapt the server's Caddyfile: ${logging}"
 fi
 assert_lacks 'X-Powered-By' 'responses do not name PHP and its version' \
     curl -s -D - -o /dev/null --max-time 5 "${BASE}/backend/getIP.php"

@@ -33,6 +33,27 @@ const LOOPBACK_PORT = 8080;
 const LOOPBACK_TIMEOUT = 5;
 
 /**
+ * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
+ * constant is deprecated and no error carries it.
+ */
+const ERROR_LEVELS = [
+    'E_ERROR' => E_ERROR,
+    'E_WARNING' => E_WARNING,
+    'E_PARSE' => E_PARSE,
+    'E_NOTICE' => E_NOTICE,
+    'E_CORE_ERROR' => E_CORE_ERROR,
+    'E_CORE_WARNING' => E_CORE_WARNING,
+    'E_COMPILE_ERROR' => E_COMPILE_ERROR,
+    'E_COMPILE_WARNING' => E_COMPILE_WARNING,
+    'E_USER_ERROR' => E_USER_ERROR,
+    'E_USER_WARNING' => E_USER_WARNING,
+    'E_USER_NOTICE' => E_USER_NOTICE,
+    'E_RECOVERABLE_ERROR' => E_RECOVERABLE_ERROR,
+    'E_DEPRECATED' => E_DEPRECATED,
+    'E_USER_DEPRECATED' => E_USER_DEPRECATED,
+];
+
+/**
  * Collects assertions and renders them in the record format above.
  */
 final class Assertions
@@ -196,6 +217,28 @@ function iniEnabled(string $directive): bool
     return in_array($value, ['on', 'yes', 'true', 'stderr', 'stdout'], true) || (int) $value !== 0;
 }
 
+/**
+ * The levels a mask holds, by name, with any bit no level names left as a
+ * number
+ *
+ * @return list<string>
+ */
+function errorLevels(int $mask): array
+{
+    $levels = [];
+    foreach (ERROR_LEVELS as $name => $bit) {
+        if (($mask & $bit) !== 0) {
+            $levels[] = $name;
+            $mask &= ~$bit;
+        }
+    }
+    if ($mask !== 0) {
+        $levels[] = (string) $mask;
+    }
+
+    return $levels;
+}
+
 function phpIni(): void
 {
     $postMaxSize = (string) ini_get('post_max_size');
@@ -203,6 +246,10 @@ function phpIni(): void
     fwrite(STDOUT, json_encode([
         'allow_url_fopen' => iniEnabled('allow_url_fopen'),
         'display_errors' => iniEnabled('display_errors'),
+        'log_errors' => iniEnabled('log_errors'),
+        'error_log' => (string) ini_get('error_log'),
+        // error_reporting() is the level in force, E_ALL when nothing set it
+        'error_reporting' => errorLevels(error_reporting()),
         'post_max_size' => $postMaxSize,
         // In bytes, as PHP reads the K, M and G suffixes
         'post_max_size_bytes' => ini_parse_quantity($postMaxSize),
