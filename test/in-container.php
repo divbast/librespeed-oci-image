@@ -13,9 +13,9 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini, probe-getip, read-salt, read-row, http-request and
- * http-request-locked are the exceptions: they print what they read and
- * assert nothing.
+ * php-ini, probe-getip, read-salt, read-row, http-request,
+ * http-request-locked and lock-holders are the exceptions: they print what
+ * they read, and assert nothing.
  */
 
 /**
@@ -40,6 +40,10 @@ const SQLITE_MAGIC = "SQLite format 3\0";
 // checks a password
 const STATS_LOGIN_DB = '/data/stats-login.db';
 const STATS_LOGIN_LOCK = '/tmp/librespeed/stats-login.lock';
+// What login.php checks a password against, read on every request
+const STATS_PASSWORD_HASH = '/data/stats-password.hash';
+// Every lock the kernel holds, one per line, as fcntl(2) and flock(2) take them
+const PROC_LOCKS = '/proc/locks';
 const HTTP_TIMEOUT = 10;
 // An HTTP field name is a token: RFC 9110, section 5.6.2
 const HEADER_LINE = '/\A[!#$%&\'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\z/';
@@ -507,6 +511,58 @@ function httpRequestLocked(string $method, string $url, string $headers, string 
     }
 }
 
+/**
+ * Prints "<kind> <access> <pid>" for every lock held on a file, as
+ * /proc/locks lists it, and nothing if none is. It only reads: probing with
+ * a lock of its own could take the very lock it looks for. /proc/locks names
+ * a file by device and inode, the device as major:minor in hex.
+ */
+function lockHolders(string $path): void
+{
+    $stat = @stat($path);
+    if ($stat === false) {
+        throw new RuntimeException("cannot stat $path");
+    }
+    $device = $stat['dev'];
+    $file = sprintf(
+        '%02x:%02x:%d',
+        ($device >> 8) & 0xfff,
+        ($device & 0xff) | (($device >> 12) & 0xfff00),
+        $stat['ino'],
+    );
+
+    // "1: FLOCK  ADVISORY  WRITE 1 00:2a:3 0 EOF"; a waiter's line has "->"
+    // after the number, and holds nothing
+    foreach (explode("\n", readOrThrow(PROC_LOCKS)) as $line) {
+        $fields = preg_split('/\s+/', trim($line));
+        if ($fields !== false && count($fields) >= 6 && $fields[1] !== '->' && $fields[5] === $file) {
+            fwrite(STDOUT, "{$fields[1]} {$fields[3]} {$fields[4]}\n");
+        }
+    }
+}
+
+/**
+ * Writes the stats password's hash at the bcrypt cost given, as the
+ * bootstrap writes it at PHP's default: cost 16 makes each check take
+ * seconds, so a check can be caught while it runs.
+ */
+function writeStatsHash(string $password, string $cost): void
+{
+    if (preg_match('/^(?:[4-9]|[12][0-9]|3[01])$/', $cost) !== 1) {
+        throw new InvalidArgumentException("'$cost' is not a bcrypt cost");
+    }
+    $staging = STATS_PASSWORD_HASH . '.new';
+    if (!@touch($staging)
+        || !@chmod($staging, 0o600)
+        || @file_put_contents($staging, password_hash($password, PASSWORD_BCRYPT, ['cost' => (int) $cost])) === false
+        || !@rename($staging, STATS_PASSWORD_HASH)) {
+        throw new RuntimeException('cannot write ' . STATS_PASSWORD_HASH);
+    }
+
+    $written = password_get_info(readOrThrow(STATS_PASSWORD_HASH))['options']['cost'] ?? null;
+    Assertions::equals(STATS_PASSWORD_HASH . ', bcrypt cost', $cost, is_int($written) ? (string) $written : 'none');
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -535,6 +591,8 @@ function commands(): array
             'arguments' => ['method', 'url', 'headers', 'body'],
             'handler' => httpRequestLocked(...),
         ],
+        'lock-holders' => ['arguments' => ['path'], 'handler' => lockHolders(...)],
+        'write-stats-hash' => ['arguments' => ['password', 'cost'], 'handler' => writeStatsHash(...)],
     ];
 }
 

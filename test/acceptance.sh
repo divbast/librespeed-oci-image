@@ -504,6 +504,23 @@ proxy_request() {
     PROXY_STATUS=${out%%$'\n'*}
 }
 
+# A login from inside the server's container, so from 127.0.0.1: a client
+# apart from this host. With http-request-locked it is sent while the probe
+# holds login.php's lock. Sets LOOPBACK_STATUS and LOOPBACK_BODY.
+loopback_login() {
+    local command="${1}" password="${2}" out
+    out=$("${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" "${command}" POST \
+        'http://127.0.0.1:8080/results/stats.php?op=login' '' "password=${password}" 2>&1)
+    LOOPBACK_STATUS=${out%%$'\n'*}
+    LOOPBACK_BODY=${out#*$'\n'}
+}
+
+# Who holds login.php's lock, from /proc/locks: "<kind> <access> <pid>", or
+# nothing
+login_lock_holders() {
+    "${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" lock-holders /tmp/librespeed/stats-login.lock 2>&1
+}
+
 cleanup() {
     "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
         "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
@@ -1117,54 +1134,45 @@ assert_eq 429 "${STATUS}" 'after a restart: the right password'
 probe "${TEL_CTR}" age-failures 901
 stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
 assert_eq 303 "${STATUS}" 'after age-failures 901: the right password'
-# One password is checked at a time, server-wide. Of logins sent all at
-# once, the first in is checked, and any that arrives meanwhile is turned
-# away at once: no bcrypt spent, no failure recorded. How many get checked
-# depends on timing; that some are turned away, and only those checked are
-# recorded, does not.
-for i in {1..4}; do
-    curl -s -o "${WORK}/burst-${i}" -w '%{http_code}' --max-time 30 --data-urlencode "password=burst-${i}" \
-        "${STATS_URL}?op=login" >"${WORK}/burst-${i}.status" &
-done
-wait
-checked=0
-busy=0
-other=''
-for i in {1..4}; do
-    status=$(<"${WORK}/burst-${i}.status")
-    if [[ "${status}" == 403 ]]; then
-        checked=$(( checked + 1 ))
-    elif [[ "${status}" == 429 ]] && grep -q 'Another login is being checked' "${WORK}/burst-${i}"; then
-        busy=$(( busy + 1 ))
-    else
-        other+="${status} "
-    fi
-done
-if (( checked >= 1 && busy >= 1 )) && [[ -z "${other}" ]]; then
-    pass "four wrong passwords at once: ${checked} checked, ${busy} turned away while one was"
-else
-    fail "four wrong passwords at once: expected at least one 403 and one busy 429, and nothing else; got ${checked} 403, ${busy} busy 429, and '${other}'"
-fi
+# A second client, apart from this host: the server's own loopback
+loopback_login http-request wrong-1
+assert_eq 403 "${LOOPBACK_STATUS}" "from the server's own loopback, a second client: a wrong password"
 buckets=$(failure_buckets "${TEL_CTR}")
-if [[ "${buckets}" =~ =([0-9]+)$ && "${BASH_REMATCH[1]}" == "${checked}" ]]; then
-    pass "only the passwords checked are recorded (${buckets})"
-else
-    fail "only the passwords checked are recorded: expected ${checked} failures, got '${buckets}'"
-fi
-# While a check is under way, even the right password is turned away, and
-# nothing is recorded. Once it is over, nothing is left holding the lock.
-locked=$("${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" http-request-locked POST \
-    'http://127.0.0.1:8080/results/stats.php?op=login' '' "password=${STATS_PASSWORD_VALUE}" 2>&1)
-assert_eq 429 "${locked%%$'\n'*}" 'the right password while another login is being checked'
-assert_contains 'Another login is being checked' 'the 429 says why' printf '%s' "${locked}"
-again=$(failure_buckets "${TEL_CTR}")
-if [[ "${buckets}" =~ =[0-9]+$ && "${again}" == "${buckets}" ]]; then
-    pass "turned away while busy, nothing is recorded (${again})"
-else
-    fail "turned away while busy, nothing is recorded: expected '${buckets}', got '${again}'"
-fi
+assert_eq '127.0.0.1=1' "${buckets}" "the loopback's failure is counted apart from this host"
+# One password is checked at a time, server-wide. While the probe holds
+# login.php's lock, even the right password is turned away at once, and
+# nothing is recorded.
+loopback_login http-request-locked "${STATS_PASSWORD_VALUE}"
+assert_eq 429 "${LOOPBACK_STATUS}" 'the right password while the probe holds the lock'
+assert_contains 'Another login is being checked' 'the 429 says why' printf '%s' "${LOOPBACK_BODY}"
+buckets=$(failure_buckets "${TEL_CTR}")
+assert_eq '127.0.0.1=1' "${buckets}" 'turned away while busy, nothing is recorded'
+# The probe is a process of its own. Between two of the server's threads it
+# holds the same: with a hash at bcrypt cost 16 one check takes seconds, so
+# login A is caught holding the lock in /proc/locks, read rather than probed
+# with a lock of the test's own, and login B, sent then, is turned away.
+probe "${TEL_CTR}" write-stats-hash "${STATS_PASSWORD_VALUE}" 16
+curl -s -o /dev/null -w '%{http_code}' --max-time 120 --data-urlencode "password=${STATS_PASSWORD_VALUE}" \
+    "${STATS_URL}?op=login" >"${WORK}/login-a" &
+login_a=$!
+holder=''
+deadline=$(( SECONDS + 30 ))
+while [[ -z "${holder}" && ! -s "${WORK}/login-a" ]] && (( SECONDS < deadline )); do
+    holder=$(login_lock_holders)
+done
+assert_eq 'FLOCK WRITE 1' "${holder}" 'login A holds the lock: an flock(2) lock, taken by the server, PID 1'
+loopback_login http-request wrong-2
+assert_eq 429 "${LOOPBACK_STATUS}" "login B, sent meanwhile to another of the server's threads"
+assert_contains 'Another login is being checked' 'login B: the 429 says why' printf '%s' "${LOOPBACK_BODY}"
+wait "${login_a}"
+login_a=$(<"${WORK}/login-a")
+assert_eq 303 "${login_a}" 'login A, once checked: the right password'
+buckets=$(failure_buckets "${TEL_CTR}")
+assert_eq '127.0.0.1=1' "${buckets}" 'login B recorded nothing'
+# PHP 8.5's default cost, as the bootstrap writes it
+probe "${TEL_CTR}" write-stats-hash "${STATS_PASSWORD_VALUE}" 12
 stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
-assert_eq 303 "${STATUS}" 'once nothing is being checked: the right password'
+assert_eq 303 "${STATUS}" 'with the hash back at cost 12, the lock free: the right password'
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust; IPv6 counts per /64'
