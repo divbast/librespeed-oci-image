@@ -165,6 +165,28 @@ function failures(): PDO
 }
 
 /**
+ * The seconds until a client's oldest failure inside the window leaves it,
+ * if the client is at its limit, or 0 if it is below. A read alone.
+ */
+function lockedOutFor(PDO $pdo, string $client, int $now): int
+{
+    $recent = $pdo->prepare('SELECT COUNT(*), MIN(at) FROM failures WHERE client = ? AND at > ?');
+    $recent->execute([$client, $now - FAILURE_WINDOW]);
+    $row = $recent->fetch(PDO::FETCH_NUM);
+    $count = is_array($row) && is_int($row[0]) ? $row[0] : 0;
+    $oldest = is_array($row) && is_int($row[1]) ? $row[1] : $now;
+
+    return $count >= FAILURE_LIMIT ? max(1, $oldest + FAILURE_WINDOW - $now) : 0;
+}
+
+function tooMany(int $wait): never
+{
+    header('Retry-After: ' . $wait);
+    respond(429, 'Too many failed logins from your address. Try again in '
+        . (int) ceil($wait / 60) . ' minute(s).', false);
+}
+
+/**
  * Counts the client's failures inside the window and, below the limit,
  * records this attempt as one more before the password is checked. A
  * success removes it again. Both happen in one write transaction, so even
@@ -179,16 +201,11 @@ function admit(PDO $pdo, string $client, int $now): int
     $pdo->exec('BEGIN IMMEDIATE');
     try {
         $pdo->prepare('DELETE FROM failures WHERE at <= ?')->execute([$now - FAILURE_WINDOW]);
-        $recent = $pdo->prepare('SELECT COUNT(*), MIN(at) FROM failures WHERE client = ?');
-        $recent->execute([$client]);
-        $row = $recent->fetch(PDO::FETCH_NUM);
-        $count = is_array($row) && is_int($row[0]) ? $row[0] : 0;
-        $oldest = is_array($row) && is_int($row[1]) ? $row[1] : $now;
-
-        if ($count >= FAILURE_LIMIT) {
+        $wait = lockedOutFor($pdo, $client, $now);
+        if ($wait > 0) {
             $pdo->exec('COMMIT');
 
-            return max(1, $oldest + FAILURE_WINDOW - $now);
+            return $wait;
         }
 
         $pdo->prepare('INSERT INTO failures (client, at) VALUES (?, ?)')->execute([$client, $now]);
@@ -213,6 +230,16 @@ function login(): never
 
     $client = bucket(client());
     $hash = passwordHash();
+    $pdo = failures();
+
+    // A client already at its limit is answered before the lock is tried,
+    // so no flood from it can hold the lock against anyone else. This is a
+    // read, and records nothing; admit() counts again under the lock, and
+    // that count decides.
+    $wait = lockedOutFor($pdo, $client, time());
+    if ($wait > 0) {
+        tooMany($wait);
+    }
 
     // One check at a time, server-wide: an attempt that arrives during
     // another's is turned away at once, spending no bcrypt and recording
@@ -223,13 +250,10 @@ function login(): never
         respond(429, 'Another login is being checked. Try again in a moment.', true);
     }
 
-    $pdo = failures();
     $wait = admit($pdo, $client, time());
     if ($wait > 0) {
         release($lock);
-        header('Retry-After: ' . $wait);
-        respond(429, 'Too many failed logins from your address. Try again in '
-            . (int) ceil($wait / 60) . ' minute(s).', false);
+        tooMany($wait);
     }
 
     // $_POST, never php://input, which would spool a large body into /tmp

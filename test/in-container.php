@@ -14,8 +14,8 @@ declare(strict_types=1);
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
  * php-ini, probe-getip, read-salt, read-row, http-request,
- * http-request-locked and lock-holders are the exceptions: they print what
- * they read, and assert nothing.
+ * http-request-locked, lock-holders and hold-db-lock are the exceptions:
+ * they print what they read or do, and assert nothing.
  */
 
 /**
@@ -563,6 +563,27 @@ function writeStatsHash(string $password, string $cost): void
     Assertions::equals(STATS_PASSWORD_HASH . ', bcrypt cost', $cost, is_int($written) ? (string) $written : 'none');
 }
 
+/**
+ * Holds SQLite's write lock on login.php's database for the given seconds,
+ * as a long write would, printing "held" once it has it and "released" once
+ * it lets go. A login that has to write waits the hold out.
+ */
+function holdDbLock(string $seconds): void
+{
+    if (preg_match('/^[1-9][0-9]?$/', $seconds) !== 1) {
+        throw new InvalidArgumentException("'$seconds' is not a number of seconds");
+    }
+    $pdo = new PDO('sqlite:' . STATS_LOGIN_DB, null, null, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => HTTP_TIMEOUT,
+    ]);
+    $pdo->exec('BEGIN IMMEDIATE');
+    fwrite(STDOUT, "held\n");
+    sleep((int) $seconds);
+    $pdo->exec('ROLLBACK');
+    fwrite(STDOUT, "released\n");
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -593,6 +614,7 @@ function commands(): array
         ],
         'lock-holders' => ['arguments' => ['path'], 'handler' => lockHolders(...)],
         'write-stats-hash' => ['arguments' => ['password', 'cost'], 'handler' => writeStatsHash(...)],
+        'hold-db-lock' => ['arguments' => ['seconds'], 'handler' => holdDbLock(...)],
     ];
 }
 

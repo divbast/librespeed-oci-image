@@ -1173,6 +1173,60 @@ assert_eq '127.0.0.1=1' "${buckets}" 'login B recorded nothing'
 probe "${TEL_CTR}" write-stats-hash "${STATS_PASSWORD_VALUE}" 12
 stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
 assert_eq 303 "${STATUS}" 'with the hash back at cost 12, the lock free: the right password'
+
+# A client already at its limit is answered before the lock is tried, so no
+# flood from it ever holds the lock against anyone else
+for i in 2 3 4 5; do
+    loopback_login http-request "wrong-$(( i + 1 ))"
+    assert_eq 403 "${LOOPBACK_STATUS}" "from the loopback: wrong password ${i} of 5"
+done
+buckets=$(failure_buckets "${TEL_CTR}")
+assert_eq '127.0.0.1=5' "${buckets}" 'the loopback is at its limit'
+loopback_login http-request-locked "${STATS_PASSWORD_VALUE}"
+assert_eq 429 "${LOOPBACK_STATUS}" 'at its limit, while the probe holds the lock: the right password'
+assert_contains 'Too many failed logins' 'at its limit, it is told so, not that a check is under way' \
+    printf '%s' "${LOOPBACK_BODY}"
+# A flood from it while the database's write lock is held: any request of
+# the flood that took login.php's lock would sit inside it until the hold
+# ends, and this host's login, sent meanwhile, would be turned away
+"${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" hold-db-lock 3 >"${WORK}/db-hold" 2>&1 &
+hold=$!
+deadline=$(( SECONDS + 10 ))
+until grep -qx held "${WORK}/db-hold" || (( SECONDS >= deadline )); do
+    sleep 0.1
+done
+assert_contains held 'the database write lock is held' cat "${WORK}/db-hold"
+for i in 1 2 3 4; do
+    "${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" http-request POST \
+        'http://127.0.0.1:8080/results/stats.php?op=login' '' "password=${STATS_PASSWORD_VALUE}" \
+        >"${WORK}/flood-${i}" 2>&1 &
+done
+# Until the flood is answered, or one of it holds the lock
+deadline=$(( SECONDS + 10 ))
+while (( SECONDS < deadline )); do
+    answered=0
+    for i in 1 2 3 4; do
+        [[ -s "${WORK}/flood-${i}" ]] && answered=$(( answered + 1 ))
+    done
+    holder=$(login_lock_holders)
+    (( answered == 4 )) || [[ -n "${holder}" ]] && break
+done
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq 303 "${STATUS}" 'this host, during a flood from the loopback: the right password'
+wait
+refused=0
+for i in 1 2 3 4; do
+    read -r first <"${WORK}/flood-${i}"
+    if [[ "${first}" == 429 ]] && grep -q 'Too many failed logins' "${WORK}/flood-${i}"; then
+        refused=$(( refused + 1 ))
+    else
+        sed "s/^/       | flood ${i}: /" "${WORK}/flood-${i}" >&2
+    fi
+done
+assert_eq 4 "${refused}" "the flood: each told it is over its limit"
+buckets=$(failure_buckets "${TEL_CTR}")
+assert_eq '127.0.0.1=5' "${buckets}" 'the flood recorded nothing'
+wait "${hold}" 2>/dev/null
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust; IPv6 counts per /64'
