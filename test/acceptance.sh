@@ -18,6 +18,14 @@ HOSTILE_CTR=librespeed-acc-hostile
 BADENV_CTR=librespeed-acc-badenv
 NET=librespeed-acc-net
 INTERNAL_NET=librespeed-acc-internal-net
+# Sections 9 to 12 run one container at a time on this port
+TEL_PORT=18192
+TEL_BASE="http://127.0.0.1:${TEL_PORT}"
+TEL_CTR=librespeed-acc-telemetry
+REFUSED_CTR=librespeed-acc-refused
+TEL_VOL=librespeed-acc-telemetry
+PERSIST_VOL=librespeed-acc-persist
+REFUSED_VOL=librespeed-acc-refused
 
 # The size the README states. Every container here gets exactly this, so no
 # check passes on more room than the contract grants.
@@ -166,23 +174,23 @@ check_upload() {
 
 # A dot segment in the path picks the route by the path it resolves to, and
 # then FrankenPHP picks the script to run. That must be the script the route
-# allows: getIP.php's own answer, or a refusal. A helper such as
-# getIP_util.php answers 200 with an empty body instead.
+# allows, known by its own answer, or there must be a refusal. A helper such
+# as getIP_util.php answers 200 with an empty body instead.
 DOTSEG_CLIENT=203.0.113.9
-assert_getip_or_refused() {
-    local path="${1}" out status body
+assert_runs_or_refused() {
+    local base="${1}" path="${2}" script="${3}" expected="${4}" out status body
     out=$(curl -s --path-as-is --max-time 5 -w '\n%{http_code}' \
-        -H "X-Forwarded-For: ${DOTSEG_CLIENT}" "${BASE}${path}")
+        -H "X-Forwarded-For: ${DOTSEG_CLIENT}" "${base}${path}")
     status=${out##*$'\n'}
     body=${out%$'\n'*}
     case "${status}" in
-        200)
-            assert_eq "{\"processedString\":\"${DOTSEG_CLIENT}\",\"rawIspInfo\":\"\"}" "${body}" \
-                "GET ${path} runs getIP.php"
-            ;;
+        200) assert_eq "${expected}" "${body}" "GET ${path} runs ${script}" ;;
         400 | 404) pass "GET ${path} is refused (${status})" ;;
-        *) fail "GET ${path}: expected getIP.php's answer or a refusal, got ${status}" ;;
+        *) fail "GET ${path}: expected ${script}'s answer or a refusal, got ${status}" ;;
     esac
+}
+assert_getip_or_refused() {
+    assert_runs_or_refused "${BASE}" "${1}" getIP.php "{\"processedString\":\"${DOTSEG_CLIENT}\",\"rawIspInfo\":\"\"}"
 }
 
 # Print a container's exit code once it has stopped, or "running" if it is
@@ -206,9 +214,152 @@ exit_code_within() {
     done
 }
 
+# Start a container under the contract on TEL_PORT, with the engine options
+# given, then install the probe. Fails, with the container's log, if it
+# stops or never serves.
+start_served() {
+    local ctr="${1}" deadline=$(( SECONDS + WAIT_FOR_PORT_SECONDS )) status running
+    shift
+    "${ENGINE}" rm -f "${ctr}" >/dev/null 2>&1
+    if ! "${ENGINE}" run -d --name "${ctr}" "${CONFINE[@]}" --network "${NET}" -p "${TEL_PORT}:8080" \
+            "${@}" "${IMAGE}" >/dev/null; then
+        fail "${ctr}: ${ENGINE} run ${*} failed"
+        return 1
+    fi
+    while :; do
+        status=$(http_status "${TEL_BASE}/")
+        [[ "${status}" != 000 ]] && break
+        running=$("${ENGINE}" inspect --format '{{.State.Running}}' "${ctr}" 2>&1)
+        if [[ "${running}" != true ]] || (( SECONDS >= deadline )); then
+            fail "${ctr} never served with ${*}"
+            "${ENGINE}" logs "${ctr}" 2>&1 | sed 's/^/       | /' >&2
+            return 1
+        fi
+        sleep 1
+    done
+    install_probe "${ctr}"
+}
+
+# Start a container that must refuse to start, and check that its log
+# names the reason
+assert_refused() {
+    local what="${1}" needle="${2}" code
+    shift 2
+    "${ENGINE}" rm -f "${REFUSED_CTR}" >/dev/null 2>&1
+    "${ENGINE}" run -d --name "${REFUSED_CTR}" "${CONFINE[@]}" --network "${NET}" "${@}" "${IMAGE}" >/dev/null
+    code=$(exit_code_within "${REFUSED_CTR}" 30)
+    assert_eq 1 "${code}" "${what}: the container exits"
+    assert_contains "${needle}" "${what}: the log says '${needle}'" "${ENGINE}" logs "${REFUSED_CTR}"
+}
+
+# Run PHP code in a throwaway container as uid 65532, the volume's owner
+php_on_volume() {
+    local volume="${1}" code="${2}"
+    "${ENGINE}" run --rm "${CONFINE[@]}" --network none -v "${volume}:/data" \
+        --entrypoint "${PHP_BIN}" "${IMAGE}" php-cli -r "${code}"
+}
+
+# Run PHP code in a running container and print what it prints
+php_in() {
+    "${ENGINE}" exec "${1}" "${PHP_BIN}" php-cli -r "${2}" 2>&1
+}
+
+# Run one of the probe's printing subcommands in the telemetry container. On
+# failure it prints the probe's FAIL record, which no check will take for an
+# answer.
+probe_out() {
+    "${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" "${@}" 2>&1
+}
+
+# What a browser at telemetry level basic posts at the end of a test.
+# speedtest_worker.js sends FormData, so multipart, with the fields in this
+# order: ispinfo is JSON.stringify({processedString, rawIspInfo}) of
+# getIP.php's answer with ISP info, log is empty below level full, and
+# extra names the server the UI selected. The values are as the worker
+# formats them, to two decimals.
+RESULT_DL=8.42
+RESULT_UL=1.07
+RESULT_PING=23.41
+RESULT_JITTER=3.18
+BROWSER_UA='Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0'
+# The client's address, as X-Forwarded-For carries it to upstream's
+# getClientIp(). A long ISP name, with characters outside ASCII.
+RESULT_CLIENT=186.251.0.1
+# json.php's answer for the result above, less its timestamp: the speeds as
+# upstream formats them, and the ISP from the text after the address
+RESULT_JSON='{"download":"8.42","upload":"1.07","ping":"23.4","jitter":"3.18","ispinfo":"OnLine Assis Telecomunicações Ltda-EPP, Brazil"}'
+
+# Post that result. POST_META is "<curl exit> <status> <bytes sent>" and
+# POST_BODY the answer.
+post_result() {
+    local getip ispinfo out rc
+    getip=$(curl -s --max-time 5 -H "X-Forwarded-For: ${RESULT_CLIENT}" \
+        "${TEL_BASE}/backend/getIP.php?isp=true&distance=km&r=0.5")
+    ispinfo=$(jq -c '{processedString, rawIspInfo}' 2>/dev/null <<<"${getip}")
+    out=$(curl -s --max-time 10 -w '\n%{http_code} %{size_upload}' \
+        -A "${BROWSER_UA}" -H 'Accept-Language: pt-BR,pt;q=0.9' -H "X-Forwarded-For: ${RESULT_CLIENT}" \
+        --form-string "ispinfo=${ispinfo}" --form-string "dl=${RESULT_DL}" --form-string "ul=${RESULT_UL}" \
+        --form-string "ping=${RESULT_PING}" --form-string "jitter=${RESULT_JITTER}" --form-string 'log=' \
+        --form-string 'extra={"server":"local"}' "${TEL_BASE}/results/telemetry.php?r=0.42")
+    rc=$?
+    POST_META="${rc} ${out##*$'\n'}"
+    POST_BODY=${out%$'\n'*}
+}
+
+# Post the result. RESULT_ID is the id telemetry.php answers with, and
+# RESULT_BYTES the size of the body sent.
+record_result() {
+    local what="${1}"
+    RESULT_ID=''
+    post_result
+    RESULT_BYTES=${POST_META##* }
+    if [[ "${POST_META}" == "0 200 "* && "${POST_BODY}" == 'id '* ]]; then
+        pass "${what}: POST /results/telemetry.php answers '${POST_BODY}'"
+        RESULT_ID=${POST_BODY#id }
+    else
+        fail "${what}: POST /results/telemetry.php: expected '0 200 <bytes>' and 'id <id>', got '${POST_META}' and '${POST_BODY}'"
+    fi
+}
+
+# json.php's answer for an id, less the timestamp, which no test can know
+result_json() {
+    curl -s --max-time 5 "${TEL_BASE}/results/json.php?id=${1}" | jq -c 'del(.timestamp)' 2>&1
+}
+
+# A share image is 200 image/png and starts with PNG's signature. index.php
+# answers 200 with an empty body for an id it cannot find.
+assert_png() {
+    local url="${1}" what="${2}" meta magic
+    meta=$(curl -s --max-time 10 -o "${WORK}/image" -w '%{http_code} %{content_type}' "${url}")
+    magic=$(od -An -tx1 -N8 "${WORK}/image" | tr -d ' \n')
+    assert_eq '200 image/png 89504e470d0a1a0a' "${meta} ${magic}" "${what}: status, type, signature"
+}
+
+# The variables of the generated telemetry_settings.php, as JSON, as
+# upstream's scripts see them once they require it
+telemetry_settings() {
+    php_in "${1}" 'require "/tmp/librespeed/telemetry_settings.php";
+        echo json_encode(compact("db_type", "stats_password", "enable_id_obfuscation",
+            "redact_ip_addresses", "Sqlite_db_file")), "\n";'
+}
+
+# The salt read again in section 12, which must be a salt, and the one
+# first read there
+assert_same_salt() {
+    local what="${1}" again
+    again=$(probe_out read-salt)
+    if [[ "${salt_format}" == true && "${again}" == "${salt}" ]]; then
+        pass "${what}: the same salt"
+    else
+        fail "${what}: the same salt: expected '${salt}', got '${again}'"
+    fi
+}
+
 cleanup() {
-    "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" >/dev/null 2>&1 || true
+    "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
+        "${REFUSED_CTR}" >/dev/null 2>&1 || true
     "${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" >/dev/null 2>&1 || true
+    "${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" >/dev/null 2>&1 || true
 }
 trap 'cleanup; rm -rf "${WORK}"' EXIT
 cleanup
@@ -438,6 +589,196 @@ assert_lacks 'PUT@YOUR_EMAIL.HERE' "no upstream placeholder address" printf '%s'
 exit_code=$(exit_code_within "${BADENV_CTR}" 30)
 assert_eq 1 "${exit_code}" 'TELEMETRY=maybe: the container exits'
 assert_contains TELEMETRY 'TELEMETRY=maybe: the log names TELEMETRY' "${ENGINE}" logs "${BADENV_CTR}"
+
+echo '== 9. telemetry off, the default: no results routes, no volume, its switches ignored'
+# The container from section 1, which has no volume and sets nothing
+for path in /results/telemetry.php /results/json.php /results/index.php /results/ \
+        '/results/json.php?id=1' '/results/?id=1&style=modern'; do
+    assert_status 404 "GET ${path}" "${BASE}${path}"
+done
+assert_status 404 'POST /results/telemetry.php' -X POST --form-string "dl=${RESULT_DL}" \
+    "${BASE}/results/telemetry.php"
+# Nor do they answer from an allowed route by way of a dot segment
+for path in /backend/getIP.php/../../results/json.php /backend/getIP.php/%2e%2e/%2e%2e/results/index.php \
+        /backend/empty.php/../../results/telemetry.php /frontend/../results/json.php \
+        /images/..%2fresults/telemetry.php /backend/garbage.php/.%2e/.%2e/results/; do
+    assert_status 404 "GET ${path}" --path-as-is "${BASE}${path}"
+done
+state=$(php_in "${CTR}" 'readfile("/tmp/librespeed/state.json");' | jq -c . 2>&1)
+assert_eq '{"telemetry":false}' "${state}" 'state.json'
+generated=$(php_in "${CTR}" 'echo file_exists("/tmp/librespeed/telemetry_settings.php") ? "present" : "absent";')
+assert_eq absent "${generated}" 'no telemetry_settings.php'
+# Telemetry's own switches, set while it is off, are named and ignored: the
+# image's read-only /data is not touched for a salt
+start_served "${TEL_CTR}" -e REDACT_IP_ADDRESSES=true -e ENABLE_ID_OBFUSCATION=true
+assert_contains 'TELEMETRY is off, so these are ignored: REDACT_IP_ADDRESSES, ENABLE_ID_OBFUSCATION' \
+    'REDACT_IP_ADDRESSES and ENABLE_ID_OBFUSCATION without TELEMETRY: the log says they are ignored' \
+    "${ENGINE}" logs "${TEL_CTR}"
+assert_status 404 'GET /results/json.php with only the switches set' "${TEL_BASE}/results/json.php"
+level=$(curl -s --max-time 5 "${TEL_BASE}/settings.json" | jq -r '.telemetry_level' 2>&1)
+assert_eq off "${level}" 'settings.json telemetry_level with only the switches set'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+# Ignored is not unchecked: a value that is neither true nor false still
+# stops the start
+assert_refused 'ENABLE_ID_OBFUSCATION=1 without TELEMETRY' ENABLE_ID_OBFUSCATION -e ENABLE_ID_OBFUSCATION=1
+
+echo '== 10. TELEMETRY=true refuses a /data that uid 65532 cannot write'
+assert_refused "TELEMETRY=true with no volume, so on the image's read-only /data" \
+    'needs a writable /data volume' -e TELEMETRY=true
+# Root's, as a host directory would be. A tmpfs behaves the same under
+# rootless Podman, where a host directory's owner is mapped.
+assert_refused 'TELEMETRY=true on a /data owned by root, mode 0755' \
+    'needs a writable /data volume' --tmpfs /data:mode=0755 -e TELEMETRY=true
+# A database SQLite would open read-only, and an obfuscation salt PHP could
+# not read, which would change every id it hands out
+"${ENGINE}" volume create "${REFUSED_VOL}" >/dev/null
+php_on_volume "${REFUSED_VOL}" 'touch("/data/telemetry.db"); chmod("/data/telemetry.db", 0444);'
+assert_refused 'TELEMETRY=true with a /data/telemetry.db uid 65532 cannot write' \
+    '/data/telemetry.db is there, but uid 65532 cannot read and write it' -v "${REFUSED_VOL}:/data" -e TELEMETRY=true
+php_on_volume "${REFUSED_VOL}" 'chmod("/data/telemetry.db", 0644);
+    file_put_contents("/data/idObfuscation_salt.php", "<?php\n");
+    chmod("/data/idObfuscation_salt.php", 0);'
+assert_refused 'ENABLE_ID_OBFUSCATION=true with a salt uid 65532 cannot read' \
+    '/data/idObfuscation_salt.php is there, but uid 65532 cannot read it' -v "${REFUSED_VOL}:/data" \
+    -e TELEMETRY=true -e ENABLE_ID_OBFUSCATION=true
+"${ENGINE}" rm -f "${REFUSED_CTR}" >/dev/null 2>&1
+
+echo '== 11. telemetry on, recording to SQLite on a named volume'
+"${ENGINE}" volume create "${TEL_VOL}" >/dev/null
+start_served "${TEL_CTR}" -v "${TEL_VOL}:/data" -e TELEMETRY=true
+settings=$(curl -s --max-time 5 "${TEL_BASE}/settings.json")
+level=$(jq -r '.telemetry_level' 2>&1 <<<"${settings}")
+assert_eq basic "${level}" 'settings.json telemetry_level'
+# The worker posts telemetry_extra in every record, wrapped with the
+# server's name, so the image leaves it to the worker
+extra=$(jq -r 'has("telemetry_extra")' 2>&1 <<<"${settings}")
+assert_eq false "${extra}" 'settings.json sets no telemetry_extra'
+state=$(php_in "${TEL_CTR}" 'readfile("/tmp/librespeed/state.json");' | jq -c . 2>&1)
+assert_eq '{"telemetry":true}' "${state}" 'state.json'
+generated=$(telemetry_settings "${TEL_CTR}")
+shape=$(jq -c '.stats_password |= test("\\A[0-9a-f]{64}\\z")' 2>&1 <<<"${generated}")
+assert_eq '{"db_type":"sqlite","stats_password":true,"enable_id_obfuscation":false,"redact_ip_addresses":false,"Sqlite_db_file":"/data/telemetry.db"}' \
+    "${shape}" 'telemetry_settings.php, with stats_password 64 hex digits'
+password=$(jq -r '.stats_password // empty' 2>/dev/null <<<"${generated}")
+if [[ -n "${password}" ]]; then
+    assert_lacks "${password}" 'the log never shows stats_password' "${ENGINE}" logs "${TEL_CTR}"
+else
+    fail 'the log never shows stats_password: there is no stats_password to look for'
+fi
+
+record_result 'a realistic result'
+id=${RESULT_ID}
+if ini=$("${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" php-ini 2>&1) \
+        && limit=$(jq -er '.post_max_size_bytes' 2>/dev/null <<<"${ini}") \
+        && [[ "${RESULT_BYTES}" =~ ^[0-9]+$ ]] && (( RESULT_BYTES > 0 && RESULT_BYTES < limit )); then
+    pass "the record fits post_max_size (${RESULT_BYTES} of ${limit} bytes)"
+else
+    fail "the record fits post_max_size: sent '${RESULT_BYTES}' bytes, the limit is '${limit:-unknown}'"
+fi
+answer=$(result_json "${id}")
+assert_eq "${RESULT_JSON}" "${answer}" "GET /results/json.php?id=${id}"
+assert_png "${TEL_BASE}/results/index.php?id=${id}" "GET /results/index.php?id=${id}"
+# The modern UI's share link
+assert_png "${TEL_BASE}/results/?id=${id}&style=modern" "GET /results/?id=${id}&style=modern"
+db=$(php_in "${TEL_CTR}" 'echo is_file("/data/telemetry.db") ? "present" : "absent";')
+assert_eq present "${db}" '/data/telemetry.db'
+row=$(probe_out read-row "${id}")
+stored=$(jq -c --arg ip "${RESULT_CLIENT}" '{ip, dl, extra, log, ip_in_ispinfo: (.ispinfo | contains($ip))}' \
+    2>&1 <<<"${row}")
+assert_eq "{\"ip\":\"${RESULT_CLIENT}\",\"dl\":\"${RESULT_DL}\",\"extra\":\"{\\\"server\\\":\\\"local\\\"}\",\"log\":\"\",\"ip_in_ispinfo\":true}" \
+    "${stored}" "row ${id} as stored, unredacted"
+
+# No other script in results/ answers, directly or by a dot segment from an
+# allowed route: stats.php has a route only behind its own login, and
+# sanitycheck.php and telemetry_settings.php none at all
+for path in /results/stats.php /results/sanitycheck.php /results/telemetry_settings.php \
+        /results/telemetry_db.php /results/idObfuscation.php /results/idObfuscation_salt.php \
+        /results/OpenSans-Light.ttf /results/index.html /results; do
+    assert_status 404 "GET ${path}" "${TEL_BASE}${path}"
+done
+for path in /results/json.php/../stats.php /results/json.php/%2e%2e/stats.php \
+        /results/telemetry.php/..%2fsanitycheck.php /results/index.php/../telemetry_settings.php \
+        /results/index.php/.%2e/telemetry_db.php /results/json.php/../../results/stats.php \
+        /results/telemetry.php/../idObfuscation_salt.php; do
+    assert_status 404 "GET ${path}" --path-as-is "${TEL_BASE}${path}"
+done
+# and a path that resolves onto an allowed route runs that route's script
+answer=$(curl -s --max-time 5 "${TEL_BASE}/results/json.php?id=${id}")
+for path in /results/stats.php/../json.php /results/stats.php/%2e%2e/json.php \
+        /results/sanitycheck.php/../json.php /results/telemetry_settings.php/.%2e/json.php \
+        /backend/getIP_util.php/../../results/json.php; do
+    assert_runs_or_refused "${TEL_BASE}" "${path}?id=${id}" json.php "${answer}"
+done
+
+# Restarted on the same volume with the client's address redacted.
+# json.php never shows the address, so only the row can show it is gone.
+start_served "${TEL_CTR}" -v "${TEL_VOL}:/data" -e TELEMETRY=true -e REDACT_IP_ADDRESSES=true
+generated=$(telemetry_settings "${TEL_CTR}")
+redact=$(jq -c '{redact_ip_addresses}' 2>&1 <<<"${generated}")
+assert_eq '{"redact_ip_addresses":true}' "${redact}" 'telemetry_settings.php with REDACT_IP_ADDRESSES=true'
+record_result 'a result with REDACT_IP_ADDRESSES=true'
+redacted=${RESULT_ID}
+assert_lacks "${RESULT_CLIENT}" "GET /results/json.php?id=${redacted} does not show the client's address" \
+    curl -s --max-time 5 "${TEL_BASE}/results/json.php?id=${redacted}"
+row=$(probe_out read-row "${redacted}")
+stored=$(jq -c --arg ip "${RESULT_CLIENT}" '{ip, ip_in_ispinfo: (.ispinfo | contains($ip))}' 2>&1 <<<"${row}")
+assert_eq '{"ip":"0.0.0.0","ip_in_ispinfo":false}' "${stored}" "row ${redacted} as stored, redacted"
+answer=$(result_json "${id}")
+assert_eq "${RESULT_JSON}" "${answer}" "GET /results/json.php?id=${id} after the restart"
+
+# What the health check sees. A damaged database records nothing; once it
+# is gone, upstream makes a new one with the next result.
+probe "${TEL_CTR}" damage-db
+post_result
+assert_eq '0 200' "${POST_META% *}" 'POST /results/telemetry.php to a damaged database: curl exit, status'
+assert_eq '' "${POST_BODY}" 'POST /results/telemetry.php to a damaged database records nothing'
+probe "${TEL_CTR}" remove-db
+record_result 'a result after remove-db'
+assert_eq 1 "${RESULT_ID}" 'the first result in a new database'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+
+echo '== 12. the salt and the results survive restarts, and telemetry going off and on'
+"${ENGINE}" volume create "${PERSIST_VOL}" >/dev/null
+start_served "${TEL_CTR}" -v "${PERSIST_VOL}:/data" -e TELEMETRY=true -e ENABLE_ID_OBFUSCATION=true
+salt=$(probe_out read-salt)
+salt_format=$(jq '.contents | test("\\A<\\?php\n\n\\$OBFUSCATION_SALT = 0x[0-9a-f]{8};\n\\z")' 2>&1 <<<"${salt}")
+assert_eq true "${salt_format}" "the salt is in upstream's format"
+mode=$(jq -r '.mode' 2>&1 <<<"${salt}")
+assert_eq 0600 "${mode}" 'the salt is private to uid 65532'
+generated=$(telemetry_settings "${TEL_CTR}")
+first_password=$(jq -r '.stats_password // empty' 2>/dev/null <<<"${generated}")
+record_result 'a result under ENABLE_ID_OBFUSCATION=true'
+obfuscated=${RESULT_ID}
+# Upstream's obfuscated ids are seven base-36 digits. Unobfuscated, the
+# first row in a new database is plainly 1.
+if [[ "${obfuscated}" =~ ^[0-9a-z]{7}$ && "${obfuscated}" != 1 ]]; then
+    pass "the id is obfuscated (${obfuscated})"
+else
+    fail "the id is obfuscated: expected seven base-36 digits, got '${obfuscated}'"
+fi
+answer=$(result_json "${obfuscated}")
+assert_eq "${RESULT_JSON}" "${answer}" "GET /results/json.php?id=${obfuscated}"
+
+start_served "${TEL_CTR}" -v "${PERSIST_VOL}:/data" -e TELEMETRY=true -e ENABLE_ID_OBFUSCATION=true
+assert_same_salt 'after a restart'
+answer=$(result_json "${obfuscated}")
+assert_eq "${RESULT_JSON}" "${answer}" "after a restart: GET /results/json.php?id=${obfuscated}"
+generated=$(telemetry_settings "${TEL_CTR}")
+second_password=$(jq -r '.stats_password // empty' 2>/dev/null <<<"${generated}")
+if [[ -n "${first_password}" && -n "${second_password}" && "${first_password}" != "${second_password}" ]]; then
+    pass 'after a restart: a new stats_password'
+else
+    fail "after a restart: a new stats_password: got '${first_password}', then '${second_password}'"
+fi
+
+start_served "${TEL_CTR}" -v "${PERSIST_VOL}:/data" -e ENABLE_ID_OBFUSCATION=true
+assert_status 404 'with telemetry off: GET /results/json.php' "${TEL_BASE}/results/json.php?id=${obfuscated}"
+assert_same_salt 'with telemetry off'
+
+start_served "${TEL_CTR}" -v "${PERSIST_VOL}:/data" -e TELEMETRY=true -e ENABLE_ID_OBFUSCATION=true
+assert_same_salt 'with telemetry on again'
+answer=$(result_json "${obfuscated}")
+assert_eq "${RESULT_JSON}" "${answer}" "with telemetry on again: GET /results/json.php?id=${obfuscated}"
 
 echo
 if (( FAILURES == 0 )); then

@@ -13,8 +13,8 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini and probe-getip are the exceptions: they print what they read and
- * assert nothing.
+ * php-ini, probe-getip, read-salt and read-row are the exceptions: they print
+ * what they read and assert nothing.
  */
 
 /**
@@ -31,6 +31,10 @@ const READ_ONLY_ERROR = 'Read-only file system';
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORT = 8080;
 const LOOPBACK_TIMEOUT = 5;
+const TELEMETRY_DB = '/data/telemetry.db';
+const SALT_FILE = '/data/idObfuscation_salt.php';
+// The first bytes of every SQLite database file
+const SQLITE_MAGIC = "SQLite format 3\0";
 
 /**
  * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
@@ -296,6 +300,95 @@ function probeGetIp(): void
     fwrite(STDOUT, $parts[1]);
 }
 
+/**
+ * Overwrites the database's header, so that SQLite no longer recognises the
+ * file, as a disk fault or a half-restored backup would leave it.
+ */
+function damageDb(): void
+{
+    $handle = @fopen(TELEMETRY_DB, 'r+b');
+    if ($handle === false) {
+        throw new RuntimeException('cannot open ' . TELEMETRY_DB . ' to damage it');
+    }
+    $written = fwrite($handle, str_repeat('x', strlen(SQLITE_MAGIC)));
+    fclose($handle);
+
+    clearstatcache(true, TELEMETRY_DB);
+    $header = (string) @file_get_contents(TELEMETRY_DB, false, null, 0, strlen(SQLITE_MAGIC));
+    Assertions::record(
+        $written === strlen(SQLITE_MAGIC) && $header !== SQLITE_MAGIC,
+        TELEMETRY_DB . ' no longer starts with the SQLite header',
+        'damaged',
+        $header === SQLITE_MAGIC ? 'intact' : 'damaged',
+    );
+}
+
+/**
+ * Removes the database and whatever journal SQLite left beside it.
+ */
+function removeDb(): void
+{
+    foreach ([TELEMETRY_DB, TELEMETRY_DB . '-journal', TELEMETRY_DB . '-wal', TELEMETRY_DB . '-shm'] as $path) {
+        if (file_exists($path)) {
+            @unlink($path);
+        }
+    }
+
+    clearstatcache(true, TELEMETRY_DB);
+    Assertions::record(
+        !file_exists(TELEMETRY_DB),
+        TELEMETRY_DB . ' is gone',
+        'absent',
+        file_exists(TELEMETRY_DB) ? 'present' : 'absent',
+    );
+}
+
+/**
+ * Prints the salt file's contents and its mode, as JSON.
+ */
+function readSalt(): void
+{
+    $contents = readOrThrow(SALT_FILE);
+    $perms = @fileperms(SALT_FILE);
+    if ($perms === false) {
+        throw new RuntimeException('cannot stat ' . SALT_FILE);
+    }
+
+    fwrite(STDOUT, json_encode([
+        'contents' => $contents,
+        'mode' => sprintf('%04o', $perms & 0o7777),
+    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
+}
+
+/**
+ * Prints one stored result, by the database's own id, as JSON. It opens the
+ * database read-only, so it never creates one that is missing.
+ */
+function readRow(string $id): void
+{
+    if (preg_match('/^[1-9][0-9]*$/', $id) !== 1) {
+        throw new InvalidArgumentException("'$id' is not a row id");
+    }
+    if (!is_file(TELEMETRY_DB)) {
+        throw new RuntimeException(TELEMETRY_DB . ' does not exist');
+    }
+
+    $pdo = new PDO('sqlite:' . TELEMETRY_DB, null, null, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY,
+    ]);
+    $statement = $pdo->prepare(
+        'SELECT id, ip, ispinfo, extra, ua, lang, dl, ul, ping, jitter, log FROM speedtest_users WHERE id = ?',
+    );
+    $statement->execute([(int) $id]);
+    $row = $statement->fetch(PDO::FETCH_ASSOC);
+    if (!is_array($row)) {
+        throw new RuntimeException('no row ' . $id . ' in ' . TELEMETRY_DB);
+    }
+
+    fwrite(STDOUT, json_encode($row, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -311,6 +404,10 @@ function commands(): array
         'probe-egress' => ['arguments' => [], 'handler' => probeEgress(...)],
         'php-ini' => ['arguments' => [], 'handler' => phpIni(...)],
         'probe-getip' => ['arguments' => [], 'handler' => probeGetIp(...)],
+        'damage-db' => ['arguments' => [], 'handler' => damageDb(...)],
+        'remove-db' => ['arguments' => [], 'handler' => removeDb(...)],
+        'read-salt' => ['arguments' => [], 'handler' => readSalt(...)],
+        'read-row' => ['arguments' => ['id'], 'handler' => readRow(...)],
     ];
 }
 

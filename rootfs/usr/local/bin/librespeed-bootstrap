@@ -16,6 +16,11 @@ const CADDYFILE = '/etc/frankenphp/Caddyfile';
 const GENERATED_DIR = '/tmp/librespeed';
 // Upstream's files the bootstrap renders from, kept out of the served tree
 const TEMPLATES_DIR = '/usr/local/share/librespeed-templates';
+// What outlives a start, and is needed only with telemetry on. The image's
+// own results/idObfuscation_salt.php links to the salt here.
+const DATA_DIR = '/data';
+const TELEMETRY_DB = DATA_DIR . '/telemetry.db';
+const SALT_FILE = DATA_DIR . '/idObfuscation_salt.php';
 
 // index-modern.html's own text, found and replaced as upstream's entrypoint
 // does. test/upstream-layout.sh fails the build on a release that drops one.
@@ -124,14 +129,145 @@ function toJson(array|stdClass $value): string {
     return json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
 }
 
+/**
+ * /data must take a new file, as SQLite does for its journal on every
+ * write. The image's own /data is on the read-only root, so a start without
+ * a volume stops here, as does one on a volume this uid cannot write.
+ * Upstream's scripts would otherwise answer every result with an empty 200,
+ * and record nothing.
+ */
+function requireWritableData(): void {
+    $needs = 'TELEMETRY=true needs a writable ' . DATA_DIR . ' volume (uid ' . getmyuid() . ')';
+    if (!is_dir(DATA_DIR)) {
+        fail("$needs, and there is no " . DATA_DIR . ' directory');
+    }
+
+    $probe = DATA_DIR . '/.librespeed-bootstrap-probe';
+    error_clear_last();
+    if (@file_put_contents($probe, '') === false || !@unlink($probe)) {
+        fail("$needs: " . (error_get_last()['message'] ?? "cannot create and remove $probe"));
+    }
+}
+
+/**
+ * A file the server will need, if it is there already, as after a restore
+ * from a backup. SQLite opens a database it cannot write read-only, without
+ * a word, and upstream reads a salt it cannot read as 0, which changes every
+ * id it hands out.
+ */
+function requireUsable(string $path, bool $write): void {
+    clearstatcache(true, $path);
+    if (!file_exists($path) && !is_link($path)) {
+        return;
+    }
+    if (!is_file($path) || !is_readable($path) || ($write && !is_writable($path))) {
+        fail("$path is there, but uid " . getmyuid() . ' cannot ' . ($write ? 'read and write' : 'read') . ' it');
+    }
+}
+
+/**
+ * The settings upstream's results scripts require. Each value is
+ * var_export()ed; the names are upstream's.
+ */
+function telemetrySettings(bool $obfuscateIds, bool $redactIps): string {
+    $settings = [
+        'db_type' => 'sqlite',
+        // Upstream's stats.php compares a login with this. Random and new on
+        // every start, so no default password ever opens it.
+        'stats_password' => bin2hex(random_bytes(32)),
+        'enable_id_obfuscation' => $obfuscateIds,
+        'redact_ip_addresses' => $redactIps,
+        'Sqlite_db_file' => TELEMETRY_DB,
+    ];
+
+    $php = "<?php\n// Written by librespeed-bootstrap on every start\n";
+    foreach ($settings as $name => $value) {
+        $php .= '$' . $name . ' = ' . var_export($value, true) . ";\n";
+    }
+
+    return $php;
+}
+
+/**
+ * The salt that obfuscates result ids, made once and then left alone: every
+ * share link handed out was made with it. It is in upstream's own format,
+ * the one idObfuscation.php writes itself when it finds none; the value is
+ * bin2hex() output, so there is nothing in it to escape.
+ */
+function ensureSalt(): void {
+    clearstatcache(true, SALT_FILE);
+    if (file_exists(SALT_FILE)) {
+        return;
+    }
+
+    $staging = SALT_FILE . '.new';
+    if (!@touch($staging)
+        || !@chmod($staging, 0o600)
+        || @file_put_contents($staging, "<?php\n\n\$OBFUSCATION_SALT = 0x" . bin2hex(random_bytes(4)) . ";\n") === false
+        || !@rename($staging, SALT_FILE)) {
+        @unlink($staging);
+        fail('cannot create ' . SALT_FILE);
+    }
+    info('created ' . SALT_FILE . '; it belongs with ' . TELEMETRY_DB . ' in every backup');
+}
+
+/**
+ * The :8080 routes only some settings turn on. Caddy sorts a bare
+ * directive after the Caddyfile's handle blocks, where the catch-all has
+ * already answered 404, so every route here is a handle block of its own.
+ */
+function writeSiteSnippet(bool $telemetry, bool $stats): void {
+    if ($stats) {
+        fail('this image has no stats routes yet');
+    }
+    if (!$telemetry) {
+        writeGenerated('caddy/site.caddy', "# librespeed-bootstrap: telemetry is off, so no optional routes\n");
+
+        return;
+    }
+
+    writeGenerated('caddy/site.caddy', <<<'CADDY'
+        # librespeed-bootstrap: telemetry is on
+        # Records a result, and shows one as JSON and as the share image
+        @telemetry path /results/telemetry.php /results/json.php /results/index.php
+        handle @telemetry {
+        	php
+        }
+        # The share image as the modern UI links it, /results/?id=…
+        handle /results/ {
+        	rewrite * /results/index.php
+        	php
+        }
+
+        CADDY);
+}
+
 // Every variable is read and checked before anything is written
 $telemetry = envBool('TELEMETRY', false);
-if ($telemetry) {
-    fail('TELEMETRY=true needs a telemetry backend this image does not have yet');
-}
+$redactIps = envBool('REDACT_IP_ADDRESSES', false);
+$obfuscateIds = envBool('ENABLE_ID_OBFUSCATION', false);
 $title = envString('TITLE');
 $tagline = envString('TAGLINE');
 $email = envString('GDPR_EMAIL');
+
+if ($telemetry) {
+    requireWritableData();
+    requireUsable(TELEMETRY_DB, true);
+    if ($obfuscateIds) {
+        requireUsable(SALT_FILE, false);
+    }
+} else {
+    $ignored = array_keys(array_filter(
+        [
+            'REDACT_IP_ADDRESSES' => envString('REDACT_IP_ADDRESSES'),
+            'ENABLE_ID_OBFUSCATION' => envString('ENABLE_ID_OBFUSCATION'),
+        ],
+        static fn (?string $value): bool => $value !== null,
+    ));
+    if ($ignored !== []) {
+        info('TELEMETRY is off, so these are ignored: ' . implode(', ', $ignored));
+    }
+}
 
 foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
     if (!is_dir($dir) && !@mkdir($dir, 0o700)) {
@@ -145,7 +281,10 @@ foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
 }
 
 // Upstream's settings, kept as objects where they are objects, with the
-// telemetry level this start allows
+// telemetry level this start allows. Only basic, which records the results
+// alone. full and debug also send the worker's log: at debug it outgrows
+// what post_max_size lets PHP read, and upstream then records a row of
+// nulls.
 try {
     $settings = json_decode(readTemplate('settings.json'), false, 512, JSON_THROW_ON_ERROR);
 } catch (JsonException $e) {
@@ -154,7 +293,10 @@ try {
 if (!$settings instanceof stdClass) {
     fail('upstream settings.json is not a JSON object');
 }
-$settings->telemetry_level = 'off';
+$settings->telemetry_level = $telemetry ? 'basic' : 'off';
+// The worker sends this with every record, wrapped with the server's name.
+// Left to the worker, it is that name alone.
+unset($settings->telemetry_extra);
 
 // The local backend alone, in the shape upstream's entrypoint writes for
 // standalone mode. A relative server keeps every test on the origin the
@@ -174,10 +316,22 @@ $servers = [[
 writeGenerated('index.html', renderIndex(readTemplate('index-modern.html'), $title, $tagline, $email));
 writeGenerated('settings.json', toJson($settings));
 writeGenerated('server-list.json', toJson($servers));
+// What this start turned on, for the health check
+writeGenerated('state.json', toJson(['telemetry' => $telemetry]));
+if ($telemetry) {
+    writeGenerated('telemetry_settings.php', telemetrySettings($obfuscateIds, $redactIps));
+    if ($obfuscateIds) {
+        ensureSalt();
+    }
+    info('telemetry is on: results are recorded in ' . TELEMETRY_DB);
+} elseif (file_exists(GENERATED_DIR . '/telemetry_settings.php')
+    && !@unlink(GENERATED_DIR . '/telemetry_settings.php')) {
+    fail('cannot remove ' . GENERATED_DIR . '/telemetry_settings.php');
+}
 // The Caddyfile imports both snippets unconditionally, so each must exist
 // even when it has nothing to say.
 writeGenerated('caddy/global.caddy', "# librespeed-bootstrap: no global options\n");
-writeGenerated('caddy/site.caddy', "# librespeed-bootstrap: no optional routes\n");
+writeSiteSnippet($telemetry, false);
 
 info('ready');
 

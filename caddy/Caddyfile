@@ -45,7 +45,9 @@
 	}
 
 	# Written by the bootstrap on every start: the routes only some
-	# settings turn on
+	# settings turn on. Each must be a handle block. Caddy sorts a bare
+	# directive, such as respond, after every handle here, and by then the
+	# catch-all below has answered 404.
 	import /tmp/librespeed/caddy/site.caddy
 
 	handle {
