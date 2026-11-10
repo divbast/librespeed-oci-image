@@ -14,8 +14,8 @@ declare(strict_types=1);
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
  * php-ini, probe-getip, read-salt, read-row, http-request,
- * http-request-locked, lock-holders and hold-db-lock are the exceptions:
- * they print what they read or do, and assert nothing.
+ * http-request-locked, lock-holders, hold-db-lock and bootstrap-with are the
+ * exceptions: they print what they read or do, and assert nothing.
  */
 
 /**
@@ -56,6 +56,11 @@ const TCP_SOCKET = '/\A\s*\d+:\s+[0-9A-Fa-f]+:([0-9A-Fa-f]{4})\s+[0-9A-Fa-f]+:[0
 const TCP_LISTEN = '0A';
 // The speed test and the health endpoint, and nothing else
 const CONTRACT_PORTS = '8080 8081';
+const SERVER_BIN = '/usr/local/bin/frankenphp';
+const BOOTSTRAP = '/usr/local/bin/librespeed-bootstrap';
+// Long enough for a bootstrap to refuse; one still running by then has
+// started the server
+const BOOTSTRAP_DEADLINE = 10;
 
 /**
  * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
@@ -639,6 +644,63 @@ function holdDbLock(string $seconds): void
     fwrite(STDOUT, "released\n");
 }
 
+/**
+ * Runs the bootstrap with each name in the JSON object set to the bytes its
+ * hex value spells, which need not be UTF-8. An engine's -e cannot carry
+ * such bytes: Docker sends the environment as JSON, which puts U+FFFD in
+ * their place. Prints the exit code, or null if the bootstrap was still
+ * running at the deadline and so was stopped, and what it wrote to stderr.
+ */
+function bootstrapWith(string $assignments): void
+{
+    $values = json_decode($assignments, true, 2, JSON_THROW_ON_ERROR);
+    if (!is_array($values)) {
+        throw new RuntimeException('expected a JSON object of names and hex values');
+    }
+    $env = getenv();
+    foreach ($values as $name => $hex) {
+        $bytes = is_string($name) && is_string($hex) ? hex2bin($hex) : false;
+        if ($bytes === false) {
+            throw new RuntimeException("'$name' needs a name and an even run of hex digits");
+        }
+        $env[$name] = $bytes;
+    }
+
+    $process = proc_open(
+        [SERVER_BIN, 'php-cli', BOOTSTRAP],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        null,
+        $env,
+    );
+    if (!is_resource($process)) {
+        throw new RuntimeException('cannot start ' . BOOTSTRAP);
+    }
+    stream_set_blocking($pipes[2], false);
+    $stderr = '';
+    $deadline = microtime(true) + BOOTSTRAP_DEADLINE;
+    do {
+        $stderr .= (string) stream_get_contents($pipes[2]);
+        // exitcode is good only on the first call that finds it stopped
+        $status = proc_get_status($process);
+        if (!$status['running']) {
+            break;
+        }
+        usleep(100_000);
+    } while (microtime(true) < $deadline);
+    if ($status['running']) {
+        proc_terminate($process);
+    }
+    $stderr .= (string) stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    proc_close($process);
+
+    echo json_encode(
+        ['exit' => $status['running'] ? null : $status['exitcode'], 'stderr' => $stderr],
+        JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES,
+    ), "\n";
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -671,6 +733,7 @@ function commands(): array
         'lock-holders' => ['arguments' => ['path'], 'handler' => lockHolders(...)],
         'write-stats-hash' => ['arguments' => ['password', 'cost'], 'handler' => writeStatsHash(...)],
         'hold-db-lock' => ['arguments' => ['seconds'], 'handler' => holdDbLock(...)],
+        'bootstrap-with' => ['arguments' => ['assignments'], 'handler' => bootstrapWith(...)],
     ];
 }
 

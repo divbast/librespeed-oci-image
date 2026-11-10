@@ -16,6 +16,8 @@ CTR=librespeed-acc
 INTERNAL_CTR=librespeed-acc-internal
 HOSTILE_CTR=librespeed-acc-hostile
 BADENV_CTR=librespeed-acc-badenv
+# Section 8 runs the bootstrap by hand in this one, which only sleeps
+RAW_ENV_CTR=librespeed-acc-raw-env
 NET=librespeed-acc-net
 INTERNAL_NET=librespeed-acc-internal-net
 # Sections 9 to 12 run one container at a time on this port
@@ -631,8 +633,8 @@ assert_health_fails() {
 }
 
 cleanup() {
-    "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
-        "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
+    "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${RAW_ENV_CTR}" \
+        "${TEL_CTR}" "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
     "${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" "${PROXY_NET}" >/dev/null 2>&1 || true
     "${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" "${STATS_VOL}" \
         "${PROXIED_VOL}" "${HEALTH_VOL}" >/dev/null 2>&1 || true
@@ -842,7 +844,7 @@ for i in 1 2 3; do
 done
 assert_status 200 '/backend/getIP.php after the uploads' "${BASE}/backend/getIP.php"
 
-echo '== 8. hostile TITLE, TAGLINE and GDPR_EMAIL render escaped; a bad TELEMETRY stops the start'
+echo '== 8. hostile TITLE, TAGLINE and GDPR_EMAIL render escaped; bad bytes or a bad TELEMETRY stop the start'
 "${ENGINE}" run -d --name "${HOSTILE_CTR}" "${CONFINE[@]}" \
     --network "${NET}" -p "${HOSTILE_PORT}:8080" \
     -e "TITLE=Tést <b>&'\"" -e 'TAGLINE=<script>x</script>' -e 'GDPR_EMAIL=a@b.example' \
@@ -869,6 +871,30 @@ assert_lacks 'PUT@YOUR_EMAIL.HERE' "no upstream placeholder address" printf '%s'
 exit_code=$(exit_code_within "${BADENV_CTR}" 30)
 assert_eq 1 "${exit_code}" 'TELEMETRY=maybe: the container exits'
 assert_contains TELEMETRY 'TELEMETRY=maybe: the log names TELEMETRY' "${ENGINE}" logs "${BADENV_CTR}"
+# htmlspecialchars() makes '' of text that is not UTF-8, which would empty
+# the title or the heading without a word. No engine's -e can carry such
+# bytes, so the probe runs the bootstrap with them, in a container that only
+# sleeps and so has nothing written yet.
+"${ENGINE}" run -d --name "${RAW_ENV_CTR}" "${CONFINE[@]}" --network none \
+    --entrypoint "${PHP_BIN}" "${IMAGE}" php-cli -r 'sleep(600);' >/dev/null
+install_probe "${RAW_ENV_CTR}"
+for name in TITLE TAGLINE GDPR_EMAIL; do
+    # Latin-1 for "été"
+    out=$("${ENGINE}" exec "${RAW_ENV_CTR}" "${PHP_BIN}" php-cli "${PROBE}" bootstrap-with \
+        "{\"${name}\":\"e974e9\"}" 2>&1)
+    code=$(jq -r '.exit' 2>&1 <<<"${out}")
+    assert_eq 1 "${code}" "${name} in Latin-1: the bootstrap exits"
+    assert_contains "${name} is not valid UTF-8" "${name} in Latin-1: it says so" printf '%s' "${out}"
+done
+# The same word in UTF-8 passes, and the start stops at the next problem
+out=$("${ENGINE}" exec "${RAW_ENV_CTR}" "${PHP_BIN}" php-cli "${PROBE}" bootstrap-with \
+    '{"TITLE":"c3a974c3a9","TRUSTED_PROXIES":"6e6f742d612d63696472"}' 2>&1)
+assert_contains "TRUSTED_PROXIES holds 'not-a-cidr'" 'TITLE in UTF-8 passes, and the start goes on' \
+    printf '%s' "${out}"
+assert_lacks 'UTF-8' 'TITLE in UTF-8 is not refused' printf '%s' "${out}"
+written=$(php_in "${RAW_ENV_CTR}" 'echo is_dir("/tmp/librespeed") ? "present" : "absent";')
+assert_eq absent "${written}" 'every refusal came before the bootstrap wrote anything'
+"${ENGINE}" rm -f "${RAW_ENV_CTR}" >/dev/null 2>&1
 
 echo '== 9. telemetry off, the default: no results routes, no volume, its switches ignored'
 # The container from section 1, which has no volume and sets nothing

@@ -69,6 +69,18 @@ function envString(string $name): ?string {
     return $value === false || $value === '' ? null : $value;
 }
 
+/**
+ * Text for the page, which must be UTF-8: htmlspecialchars() returns '' for
+ * anything else, and the title or heading would be emptied without a word.
+ */
+function utf8Text(string $name, ?string $value): ?string {
+    if ($value !== null && preg_match('//u', $value) !== 1) {
+        fail("$name is not valid UTF-8");
+    }
+
+    return $value;
+}
+
 function escapeHtml(string $text): string {
     return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 }
@@ -422,9 +434,9 @@ function writeStatsHash(string $password): void {
 $telemetry = envBool('TELEMETRY', false);
 $redactIps = envBool('REDACT_IP_ADDRESSES', false);
 $obfuscateIds = envBool('ENABLE_ID_OBFUSCATION', false);
-$title = envString('TITLE');
-$tagline = envString('TAGLINE');
-$email = envString('GDPR_EMAIL');
+$title = utf8Text('TITLE', envString('TITLE'));
+$tagline = utf8Text('TAGLINE', envString('TAGLINE'));
+$email = utf8Text('GDPR_EMAIL', envString('GDPR_EMAIL'));
 $statsPassword = envString('STATS_PASSWORD');
 if ($statsPassword !== null && strlen($statsPassword) > BCRYPT_MAX_BYTES) {
     fail('STATS_PASSWORD is ' . strlen($statsPassword) . ' bytes long, but bcrypt reads only the first '

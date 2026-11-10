@@ -222,7 +222,10 @@ so.
 - The switches take exactly `true` or `false`. Anything else stops the
   start and the log names the variable, so a typo never quietly means the
   default.
-- `TITLE`, `TAGLINE` and `GDPR_EMAIL` are HTML-escaped into the page. No
+- `TITLE`, `TAGLINE` and `GDPR_EMAIL` are HTML-escaped into the page, and
+  one that is not valid UTF-8 stops the start, naming the variable. Docker's
+  `-e` never gets that far: it sends the environment as JSON, which puts
+  U+FFFD in place of such bytes, so they show as replacement characters. No
   value is ever written into PHP as code.
 - With telemetry off, `STATS_PASSWORD`, `REDACT_IP_ADDRESSES` and
   `ENABLE_ID_OBFUSCATION` do nothing, and the log names those that are set.
