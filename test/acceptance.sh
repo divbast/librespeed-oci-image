@@ -676,6 +676,10 @@ fi
 # pcntl_exec() overlays the bootstrap process with the server
 probe "${CTR}" assert-pid1
 probe "${CTR}" assert-no-shell
+# The contract names two ports. Anything else listening, such as Caddy's
+# admin API on 127.0.0.1:2019, is an unauthenticated way in for whatever
+# shares the container's network
+probe "${CTR}" assert-listeners
 
 echo '== 3. no egress, measured from a genuinely --internal network'
 "${ENGINE}" network create --internal "${INTERNAL_NET}" >/dev/null

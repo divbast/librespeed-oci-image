@@ -54,6 +54,7 @@ breaking change.
 | User | uid/gid **65532**, never root |
 | Listen port | **8080** for the speed test — never 80 |
 | Health port | **8081** — health only, never serves the speed test, meant to stay unpublished |
+| Other listeners | **none**: Caddy's admin API is **off** (`admin off`) |
 | tmpfs required | exactly one: `/tmp`, at **16 MiB** |
 | Volume | `/data`, required **only with `TELEMETRY=true`**, and then the bootstrap refuses to start without a writable one and logs why |
 | Outbound network | **none** |
@@ -112,6 +113,11 @@ breaking change.
   `$IPINFO_APIKEY`. The fetch stage runs it, so a release that moves or
   rewords one fails the build instead of shipping. A marker the image starts
   to rely on goes into the guard in the same change
+- **Nothing listens but 8080 and 8081.** Caddy's admin API would otherwise
+  listen on 127.0.0.1:2019 and take a new config, with no credentials, from
+  anything sharing the container's network: under host networking, every
+  process on the host. Section 2 reads the kernel's socket tables and fails
+  on any other port a process in the container listens on
 - **One process tree, always.** FrankenPHP is a single binary containing PHP and
   Caddy, and the entrypoint `pcntl_exec`s it so it inherits PID 1. A dead PHP kills
   the container. Do not add a supervisor, s6, or a second long-running process

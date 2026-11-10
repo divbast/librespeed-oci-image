@@ -47,6 +47,15 @@ const PROC_LOCKS = '/proc/locks';
 const HTTP_TIMEOUT = 10;
 // An HTTP field name is a token: RFC 9110, section 5.6.2
 const HEADER_LINE = '/\A[!#$%&\'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\z/';
+// Every TCP socket in the container's network namespace, one per line after
+// a header
+const TCP_TABLES = ['/proc/net/tcp', '/proc/net/tcp6'];
+// sl, local address:port and remote address:port in hex, the state, which is
+// 0A for a listening socket, then five columns, then the socket's inode
+const TCP_SOCKET = '/\A\s*\d+:\s+[0-9A-Fa-f]+:([0-9A-Fa-f]{4})\s+[0-9A-Fa-f]+:[0-9A-Fa-f]{4}\s+([0-9A-Fa-f]{2})(?:\s+\S+){5}\s+(\d+)\s/';
+const TCP_LISTEN = '0A';
+// The speed test and the health endpoint, and nothing else
+const CONTRACT_PORTS = '8080 8081';
 
 /**
  * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
@@ -219,6 +228,52 @@ function probeEgress(): void
         'no connection',
         $connected ? 'CONNECTED' : sprintf('no connection (errno %d: %s)', $errno, $errstr),
     );
+}
+
+/**
+ * The inode of every socket a process in the container holds open
+ *
+ * @return array<int, true>
+ */
+function heldSockets(): array
+{
+    $held = [];
+    foreach (glob('/proc/[0-9]*/fd/*') ?: [] as $fd) {
+        $target = @readlink($fd);
+        if (is_string($target) && preg_match('/\Asocket:\[(\d+)\]\z/', $target, $socket) === 1) {
+            $held[(int) $socket[1]] = true;
+        }
+    }
+
+    return $held;
+}
+
+/**
+ * Every port a process in the container listens on, from the kernel's own
+ * tables, so a listener no process advertises is counted too. Only sockets
+ * a process here holds count: Docker's resolver for a user-defined network
+ * listens in the same namespace, at 127.0.0.11 on a port of its own, but
+ * from outside the container. If no descriptor could be read, nothing
+ * counts, and the two ports the contract names are missing.
+ */
+function assertListeners(): void
+{
+    $held = heldSockets();
+    $ports = [];
+    foreach (TCP_TABLES as $table) {
+        foreach (array_slice(explode("\n", trim(readOrThrow($table))), 1) as $line) {
+            if (preg_match(TCP_SOCKET, $line, $socket) !== 1) {
+                throw new RuntimeException("$table has a line that is not a socket: $line");
+            }
+            if (strtoupper($socket[2]) === TCP_LISTEN && isset($held[(int) $socket[3]])) {
+                $ports[] = (int) hexdec($socket[1]);
+            }
+        }
+    }
+    $ports = array_unique($ports);
+    sort($ports);
+
+    Assertions::equals('TCP ports a process in the container listens on', CONTRACT_PORTS, implode(' ', $ports));
 }
 
 /**
@@ -596,6 +651,7 @@ function commands(): array
         'assert-caps' => ['arguments' => [], 'handler' => assertCaps(...)],
         'assert-no-shell' => ['arguments' => [], 'handler' => assertNoShell(...)],
         'assert-read-only' => ['arguments' => [], 'handler' => assertReadOnly(...)],
+        'assert-listeners' => ['arguments' => [], 'handler' => assertListeners(...)],
         'probe-egress' => ['arguments' => [], 'handler' => probeEgress(...)],
         'php-ini' => ['arguments' => [], 'handler' => phpIni(...)],
         'probe-getip' => ['arguments' => [], 'handler' => probeGetIp(...)],

@@ -3,6 +3,12 @@
 {
 	# container speaks plain HTTP over a trusted network.
 	auto_https off
+	# No admin API. Caddy would otherwise listen on 127.0.0.1:2019, outside
+	# the contract's two ports, and take a new config from anything that
+	# shares the container's network, with no credentials. Nothing here
+	# reloads, and FrankenPHP's admin routes only restart workers, which
+	# this server does not run.
+	admin off
 	frankenphp
 	log {
 		output stdout

@@ -21,7 +21,7 @@ in a single mostly-static binary on a Debian Trixie-based distroless base.
 | Capabilities | none (`--cap-drop ALL`) |
 | Root filesystem | read-only |
 | User | uid/gid 65532 (`nonroot`) |
-| Port | 8080 (speed test), 8081 (health, do not publish) |
+| Port | 8080 (speed test), 8081 (health, do not publish), and nothing else listens: Caddy's admin API is off |
 | tmpfs required | `/tmp`, 16 MiB (`--tmpfs /tmp:size=16m`) |
 | Volume | `/data`, required only with `TELEMETRY=true` |
 | Processes | one: FrankenPHP, as PID 1 |
