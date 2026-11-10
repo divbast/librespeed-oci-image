@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "This repository is not a PHP project and ships no PHP of its own"
+  ],
+  "license": "BSD-2-Clause",
+  "require-dev": {
+    "phpstan/phpstan": "2.3.5"
+  },
+  "config": {
+    "platform": {
+      "php": "8.5.10"
+    },
+    "sort-packages": true
+  }
+}
