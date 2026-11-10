@@ -13,8 +13,9 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini, probe-getip, read-salt, read-row and http-request are the
- * exceptions: they print what they read and assert nothing.
+ * php-ini, probe-getip, read-salt, read-row, http-request and
+ * http-request-locked are the exceptions: they print what they read and
+ * assert nothing.
  */
 
 /**
@@ -35,8 +36,10 @@ const TELEMETRY_DB = '/data/telemetry.db';
 const SALT_FILE = '/data/idObfuscation_salt.php';
 // The first bytes of every SQLite database file
 const SQLITE_MAGIC = "SQLite format 3\0";
-// Where login.php records failed logins
+// Where login.php records failed logins, and the lock it holds while it
+// checks a password
 const STATS_LOGIN_DB = '/data/stats-login.db';
+const STATS_LOGIN_LOCK = '/tmp/librespeed/stats-login.lock';
 const HTTP_TIMEOUT = 10;
 // An HTTP field name is a token: RFC 9110, section 5.6.2
 const HEADER_LINE = '/\A[!#$%&\'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\z/';
@@ -485,6 +488,25 @@ function httpRequest(string $method, string $url, string $headers, string $body)
     fwrite(STDOUT, $status[1] . "\n" . ($split[1] ?? ''));
 }
 
+/**
+ * http-request, sent while this process holds the lock login.php takes to
+ * check a password, as another login being checked would hold it. It waits
+ * for any check already under way, and lets go once the answer is in.
+ */
+function httpRequestLocked(string $method, string $url, string $headers, string $body): void
+{
+    $lock = @fopen(STATS_LOGIN_LOCK, 'c');
+    if ($lock === false || !flock($lock, LOCK_EX)) {
+        throw new RuntimeException('cannot take the lock on ' . STATS_LOGIN_LOCK);
+    }
+    try {
+        httpRequest($method, $url, $headers, $body);
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -508,6 +530,10 @@ function commands(): array
         'http-request' => [
             'arguments' => ['method', 'url', 'headers', 'body'],
             'handler' => httpRequest(...),
+        ],
+        'http-request-locked' => [
+            'arguments' => ['method', 'url', 'headers', 'body'],
+            'handler' => httpRequestLocked(...),
         ],
     ];
 }

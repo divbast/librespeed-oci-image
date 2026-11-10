@@ -20,6 +20,10 @@ declare(strict_types=1);
 
 const PASSWORD_HASH_FILE = '/data/stats-password.hash';
 const FAILURES_DB = '/data/stats-login.db';
+// Held while a password is checked, so the server checks one at a time. On
+// the /tmp tmpfs: it guards this container's own threads, and nothing about
+// it needs to outlive a start.
+const VERIFY_LOCK = '/tmp/librespeed/stats-login.lock';
 // The first twelve bytes of an IPv4 address mapped into IPv6, ::ffff:a.b.c.d
 const IPV4_MAPPED_PREFIX = "\0\0\0\0\0\0\0\0\0\0\xff\xff";
 // Five failures for one client inside 900 s, and that client is refused
@@ -100,6 +104,43 @@ function bucket(string $address): string
     return strlen($packed) === 4 ? $bucket : "$bucket/64";
 }
 
+/**
+ * The lock on checking a password, taken without waiting: null if another
+ * check holds it. Each request opens the file for itself, and flock() locks
+ * belong to that open file, so the lock holds between FrankenPHP's threads
+ * as between processes. Closing the file lets it go, and PHP closes it at
+ * the end of every request, however the request ends.
+ *
+ * @return resource|null
+ */
+function verifyLock()
+{
+    $lock = @fopen(VERIFY_LOCK, 'c');
+    if ($lock === false) {
+        throw new RuntimeException('cannot open ' . VERIFY_LOCK);
+    }
+    $busy = 0;
+    if (!flock($lock, LOCK_EX | LOCK_NB, $busy)) {
+        fclose($lock);
+        if ($busy !== 1) {
+            throw new RuntimeException('cannot lock ' . VERIFY_LOCK);
+        }
+
+        return null;
+    }
+
+    return $lock;
+}
+
+/**
+ * @param resource $lock
+ */
+function release($lock): void
+{
+    flock($lock, LOCK_UN);
+    fclose($lock);
+}
+
 function passwordHash(): string
 {
     $hash = @file_get_contents(PASSWORD_HASH_FILE);
@@ -126,9 +167,9 @@ function failures(): PDO
 /**
  * Counts the client's failures inside the window and, below the limit,
  * records this attempt as one more before the password is checked. A
- * success removes it again. Both happen in one write transaction, so
- * guesses sent in parallel cannot all pass the count before any is
- * recorded.
+ * success removes it again. Both happen in one write transaction, so even
+ * without the lock on checking, guesses sent in parallel could not all pass
+ * the count before any is recorded.
  *
  * Returns 0 when the attempt may go ahead, or else the seconds until the
  * oldest failure leaves the window.
@@ -172,10 +213,20 @@ function login(): never
 
     $client = bucket(client());
     $hash = passwordHash();
-    $pdo = failures();
 
+    // One check at a time, server-wide: an attempt that arrives during
+    // another's is turned away at once, spending no bcrypt and recording
+    // no failure
+    $lock = verifyLock();
+    if ($lock === null) {
+        header('Retry-After: 1');
+        respond(429, 'Another login is being checked. Try again in a moment.', true);
+    }
+
+    $pdo = failures();
     $wait = admit($pdo, $client, time());
     if ($wait > 0) {
+        release($lock);
         header('Retry-After: ' . $wait);
         respond(429, 'Too many failed logins from your address. Try again in '
             . (int) ceil($wait / 60) . ' minute(s).', false);
@@ -183,7 +234,9 @@ function login(): never
 
     // $_POST, never php://input, which would spool a large body into /tmp
     $password = $_POST['password'] ?? null;
-    if (!is_string($password) || strlen($password) > PASSWORD_MAX_BYTES || !password_verify($password, $hash)) {
+    $right = is_string($password) && strlen($password) <= PASSWORD_MAX_BYTES && password_verify($password, $hash);
+    release($lock);
+    if (!$right) {
         respond(403, 'Wrong password.', true);
     }
 

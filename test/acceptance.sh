@@ -1071,7 +1071,7 @@ assert_eq 403 "${STATUS}" 'after a restart with a new STATS_PASSWORD of 72 bytes
 stats_login "${STATS_URL}?op=login" "${long}" "${jar}"
 assert_eq 303 "${STATUS}" 'after a restart with a new STATS_PASSWORD of 72 bytes: the new one'
 
-echo '== 15. five failures lock a client out for 900 s, and no header makes a new client'
+echo '== 15. five failures lock a client out for 900 s, no header makes a new client, one check at a time'
 start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}"
 assert_lacks 'trusted_proxies' 'TRUSTED_PROXIES unset: global.caddy trusts no proxy' \
     generated_file "${TEL_CTR}" caddy/global.caddy
@@ -1117,15 +1117,54 @@ assert_eq 429 "${STATUS}" 'after a restart: the right password'
 probe "${TEL_CTR}" age-failures 901
 stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
 assert_eq 303 "${STATUS}" 'after age-failures 901: the right password'
-# Guesses sent all at once count as strictly as guesses sent in turn: each
-# is recorded before its password is checked
-for i in {1..10}; do
-    curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 --data-urlencode "password=parallel-${i}" \
-        "${STATS_URL}?op=login" >"${WORK}/parallel-${i}" &
+# One password is checked at a time, server-wide. Of logins sent all at
+# once, the first in is checked, and any that arrives meanwhile is turned
+# away at once: no bcrypt spent, no failure recorded. How many get checked
+# depends on timing; that some are turned away, and only those checked are
+# recorded, does not.
+for i in {1..4}; do
+    curl -s -o "${WORK}/burst-${i}" -w '%{http_code}' --max-time 30 --data-urlencode "password=burst-${i}" \
+        "${STATS_URL}?op=login" >"${WORK}/burst-${i}.status" &
 done
 wait
-statuses=$(sort "${WORK}"/parallel-* | tr '\n' ' ')
-assert_eq '403 403 403 403 403 429 429 429 429 429 ' "${statuses}" 'ten wrong passwords at once'
+checked=0
+busy=0
+other=''
+for i in {1..4}; do
+    status=$(<"${WORK}/burst-${i}.status")
+    if [[ "${status}" == 403 ]]; then
+        checked=$(( checked + 1 ))
+    elif [[ "${status}" == 429 ]] && grep -q 'Another login is being checked' "${WORK}/burst-${i}"; then
+        busy=$(( busy + 1 ))
+    else
+        other+="${status} "
+    fi
+done
+if (( checked >= 1 && busy >= 1 )) && [[ -z "${other}" ]]; then
+    pass "four wrong passwords at once: ${checked} checked, ${busy} turned away while one was"
+else
+    fail "four wrong passwords at once: expected at least one 403 and one busy 429, and nothing else; got ${checked} 403, ${busy} busy 429, and '${other}'"
+fi
+buckets=$(failure_buckets "${TEL_CTR}")
+if [[ "${buckets}" =~ =([0-9]+)$ && "${BASH_REMATCH[1]}" == "${checked}" ]]; then
+    pass "only the passwords checked are recorded (${buckets})"
+else
+    fail "only the passwords checked are recorded: expected ${checked} failures, got '${buckets}'"
+fi
+# While a check is under way, even the right password is turned away, and
+# nothing is recorded. Once it is over, nothing is left holding the lock.
+locked=$("${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" http-request-locked POST \
+    'http://127.0.0.1:8080/results/stats.php?op=login' '' "password=${STATS_PASSWORD_VALUE}" 2>&1)
+assert_eq 429 "${locked%%$'\n'*}" 'the right password while another login is being checked'
+assert_contains 'Another login is being checked' 'the 429 says why' printf '%s' "${locked}"
+again=$(failure_buckets "${TEL_CTR}")
+if [[ "${buckets}" =~ =[0-9]+$ && "${again}" == "${buckets}" ]]; then
+    pass "turned away while busy, nothing is recorded (${again})"
+else
+    fail "turned away while busy, nothing is recorded: expected '${buckets}', got '${again}'"
+fi
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq 303 "${STATUS}" 'once nothing is being checked: the right password'
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust; IPv6 counts per /64'
