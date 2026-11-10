@@ -30,6 +30,7 @@ trivy convert --format sarif --output "${SARIF}" "${REPORT}"
 arch=$(jq -er '.Metadata.ImageConfig.architecture' "${REPORT}")
 
 unpublished=0
+warning=""
 
 # --image-src remote, or a stale copy in the local engine stands in for what
 # is published. --skip-db-update, so both reports come from one database: a
@@ -45,8 +46,17 @@ elif grep -qE ': (MANIFEST_UNKNOWN|NAME_UNKNOWN|DENIED): ' "${BASELINE}.log"; th
     # on what it inherits from the FrankenPHP binary. So until there is an
     # image to compare with, every finding is an advisory.
     echo '{}' >"${BASELINE}"
-    against="nothing, because the registry has no ${PUBLISHED}"
+    against="nothing, because ${PUBLISHED} is not anonymously pullable"
     unpublished=1
+    # A package that exists but stays private is DENIED too, and would keep
+    # the scan advisory for as long as nobody made it public. So this branch
+    # never passes quietly: it warns on stderr, as an Actions annotation, and
+    # on the summary page.
+    warning="The scan is advisory because ${PUBLISHED} is not anonymously pullable: it is not published yet, or it is private. It stays advisory until ${PUBLISHED} is public."
+    echo "WARNING: ${warning}" >&2
+    if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+        echo "::warning title=Scan is advisory::${warning}"
+    fi
 else
     cat "${BASELINE}.log" >&2
     echo "could not scan ${PUBLISHED}, so no finding can be told apart from one already published" >&2
@@ -92,7 +102,8 @@ jq -r --arg against "${against}" --arg verdict "${verdict}" '
     "\(.old | length) already published, so advisory:", (.old[] | line)' <<<"${split}"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    jq -r --arg arch "${arch}" --arg against "${against}" --arg heading "${heading}" '
+    jq -r --arg arch "${arch}" --arg against "${against}" --arg heading "${heading}" \
+        --arg warning "${warning}" '
         def cell: tostring | gsub("[|]"; "\\|") | gsub("\n"; " ");
         def id: if .url == "" then .id else "[\(.id)](\(.url))" end;
         def table:
@@ -103,13 +114,14 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             end;
         "### Vulnerability scan, \($arch)", "",
         "Compared with `\($against)`.", "",
+        (if $warning == "" then empty else "> **Warning:** \($warning)", "" end),
         "**\($heading): \(.new | length)**", "", (.new | table), "",
         "**Already published, so advisory: \(.old | length)**", "", (.old | table), ""
     ' <<<"${split}" >>"${GITHUB_STEP_SUMMARY}"
 fi
 
 if (( unpublished )); then
-    echo "nothing is published yet, so all ${new} finding(s) are advisory"
+    echo "${PUBLISHED} is not anonymously pullable, so all ${new} finding(s) are advisory"
     exit 0
 fi
 if (( new > 0 )); then
