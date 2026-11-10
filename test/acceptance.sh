@@ -54,6 +54,10 @@ PROBE=/tmp/in-container.php
 # What getIP.php answers a client on loopback
 GETIP_LOOPBACK='{"processedString":"127.0.0.1","rawIspInfo":""}'
 
+# The table upstream's getPdo() makes, as results_table prints it, before
+# any result is recorded
+EMPTY_RESULTS_TABLE='{"columns":["id","ispinfo","extra","timestamp","ip","ua","lang","dl","ul","ping","jitter","log"],"rows":0}'
+
 # The speed test's upload: speedtest_worker.js posts blobs of
 # xhr_ul_blob_megabytes, 20 by default, each of 1048576 bytes
 UPLOAD_BYTES=$(( 20 * 1048576 ))
@@ -521,6 +525,16 @@ login_lock_holders() {
     "${ENGINE}" exec "${TEL_CTR}" "${PHP_BIN}" php-cli "${PROBE}" lock-holders /tmp/librespeed/stats-login.lock 2>&1
 }
 
+# The results table in a running container's database, as JSON: its columns
+# and how many rows it holds. It opens the database read-only, so it never
+# creates one.
+results_table() {
+    php_in "${1}" 'function db(): PDO { return new PDO("sqlite:/data/telemetry.db", null, null,
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]); }
+        echo json_encode(["columns" => array_column(db()->query("PRAGMA table_info(speedtest_users)")->fetchAll(), "name"),
+            "rows" => (int) db()->query("SELECT COUNT(*) FROM speedtest_users")->fetchColumn()]), "\n";'
+}
+
 cleanup() {
     "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
         "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
@@ -789,7 +803,7 @@ assert_eq off "${level}" 'settings.json telemetry_level with only the switches s
 # stops the start
 assert_refused 'ENABLE_ID_OBFUSCATION=1 without TELEMETRY' ENABLE_ID_OBFUSCATION -e ENABLE_ID_OBFUSCATION=1
 
-echo '== 10. TELEMETRY=true refuses a /data that uid 65532 cannot write'
+echo '== 10. TELEMETRY=true refuses a /data that uid 65532 cannot write, and a database SQLite cannot open'
 assert_refused "TELEMETRY=true with no volume, so on the image's read-only /data" \
     'needs a writable /data volume' -e TELEMETRY=true
 # Root's, as a host directory would be. A tmpfs behaves the same under
@@ -808,11 +822,24 @@ php_on_volume "${REFUSED_VOL}" 'chmod("/data/telemetry.db", 0644);
 assert_refused 'ENABLE_ID_OBFUSCATION=true with a salt uid 65532 cannot read' \
     '/data/idObfuscation_salt.php is there, but uid 65532 cannot read it' -v "${REFUSED_VOL}:/data" \
     -e TELEMETRY=true -e ENABLE_ID_OBFUSCATION=true
+# A database file SQLite does not recognise, as a disk fault or a
+# half-restored backup leaves it. Served, every result would be answered
+# with an empty 200 and recorded nowhere.
+php_on_volume "${REFUSED_VOL}" 'file_put_contents("/data/telemetry.db", str_repeat("x", 4096));'
+assert_refused 'TELEMETRY=true with a /data/telemetry.db that is not a database' \
+    'cannot open /data/telemetry.db: SQLSTATE[HY000]: General error: 26 file is not a database' \
+    -v "${REFUSED_VOL}:/data" -e TELEMETRY=true
 "${ENGINE}" rm -f "${REFUSED_CTR}" >/dev/null 2>&1
 
 echo '== 11. telemetry on, recording to SQLite on a named volume'
 "${ENGINE}" volume create "${TEL_VOL}" >/dev/null
 start_served "${TEL_CTR}" -v "${TEL_VOL}:/data" -e TELEMETRY=true
+# Made at start by upstream's own code, before any result: the health check
+# needs it, and upstream would make it only with the first result
+table=$(results_table "${TEL_CTR}")
+assert_eq "${EMPTY_RESULTS_TABLE}" "${table}" "/data/telemetry.db at start: upstream's table, with no rows"
+assert_contains 'created /data/telemetry.db' 'the log says the bootstrap created /data/telemetry.db' \
+    "${ENGINE}" logs "${TEL_CTR}"
 settings=$(curl -s --max-time 5 "${TEL_BASE}/settings.json")
 level=$(jq -r '.telemetry_level' 2>&1 <<<"${settings}")
 assert_eq basic "${level}" 'settings.json telemetry_level'

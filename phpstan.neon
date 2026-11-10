@@ -11,3 +11,7 @@ parameters:
         - rootfs/usr/local/bin/librespeed-bootstrap
         - rootfs/usr/local/share/librespeed-login/login.php
         - test/in-container.php
+
+    # Scanned for definitions, not analysed
+    scanFiles:
+        - stubs/librespeed-image.php

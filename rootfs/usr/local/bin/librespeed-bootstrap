@@ -16,6 +16,8 @@ const CADDYFILE = '/etc/frankenphp/Caddyfile';
 const GENERATED_DIR = '/tmp/librespeed';
 // Upstream's files the bootstrap renders from, kept out of the served tree
 const TEMPLATES_DIR = '/usr/local/share/librespeed-templates';
+// Upstream's results scripts, whose own code makes the database
+const RESULTS_DIR = '/var/www/librespeed/results';
 // What outlives a start, and is needed only with telemetry on. The image's
 // own results/idObfuscation_salt.php links to the salt here.
 const DATA_DIR = '/data';
@@ -214,6 +216,40 @@ function ensureSalt(): void {
         fail('cannot create ' . SALT_FILE);
     }
     info('created ' . SALT_FILE . '; it belongs with ' . TELEMETRY_DB . ' in every backup');
+}
+
+/**
+ * The database and its table, made by upstream's own getPdo(), so the
+ * schema is always upstream's. Upstream would make them only with the first
+ * result, and until then the health check would find no database to read.
+ * A database already there is opened the same way, and one getPdo() cannot
+ * open stops the start: served, every result would be answered with an
+ * empty 200 and recorded nowhere.
+ *
+ * getPdo() names its includes and the settings file relative to results/,
+ * as upstream's scripts run from there, so it runs from there too. The
+ * server starts in the directory the bootstrap started in, and the
+ * connection closes when this returns, before the exec.
+ */
+function createDatabase(): void {
+    clearstatcache(true, TELEMETRY_DB);
+    $existed = file_exists(TELEMETRY_DB);
+    $telemetryDb = RESULTS_DIR . '/telemetry_db.php';
+    $startDir = getcwd();
+    if (!is_file($telemetryDb) || $startDir === false || !@chdir(RESULTS_DIR)) {
+        fail("cannot run $telemetryDb from " . RESULTS_DIR . ': this is not a complete LibreSpeed image');
+    }
+    require_once $telemetryDb;
+    $pdo = getPdo(true);
+    if (!@chdir($startDir)) {
+        fail("cannot return to $startDir");
+    }
+    if (!$pdo instanceof PDO) {
+        fail('cannot open ' . TELEMETRY_DB . ': ' . (is_string($pdo) ? $pdo : 'upstream gives no reason'));
+    }
+    if (!$existed) {
+        info('created ' . TELEMETRY_DB . '; it belongs in every backup');
+    }
 }
 
 /**
@@ -466,6 +502,8 @@ if ($telemetry) {
     if ($obfuscateIds) {
         ensureSalt();
     }
+    // After the settings file, which getPdo() reads
+    createDatabase();
     info('telemetry is on: results are recorded in ' . TELEMETRY_DB);
     if ($statsPassword !== null) {
         writeStatsHash($statsPassword);
