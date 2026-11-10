@@ -6,7 +6,9 @@
 # the build if this list and the binary disagree.
 ARG PHP_EXTENSIONS="ctype,filter,openssl,phar,pdo,pdo_sqlite,sqlite3,session,gd,zlib,pcntl,posix,opcache"
 # watcher is FrankenPHP's file watcher. freetype and libpng are what gd needs
-# to draw the share image's text and write it as a PNG.
+# to draw the share image's text and write it as a PNG. spc builds both
+# already, freetype as one of gd's suggestions and libpng as a dependency, so
+# naming them here keeps the share image working if spc ever stops.
 ARG PHP_EXTENSION_LIBS="watcher,freetype,libpng"
 ARG BUILDER_IMAGE=dunglas/frankenphp:static-builder-gnu@sha256:4dcdd53971ba1f373c3eb90e393dd3944687938c5c03494ab684921594905fc7
 # The binary's own roots. Unset, build-static.sh takes the newest PHP 8.5 from
@@ -64,25 +66,16 @@ RUN set -eux; \
         "echo \"\$1\" >>/go/src/app/dist/spc.calls" \
         "exec php /opt/static-php-cli/bin/spc \"\$@\"" >/go/src/app/dist/spc; \
     chmod 0755 /go/src/app/dist/spc
-# craft.yml builds every library a package suggests as well as what it needs.
-# gd suggests libjpeg, libwebp and libavif, which bring libaom, libxml2, xz,
-# libiconv and bzip2 after them, and gd links them all: image decoders that
-# nothing here calls, since LibreSpeed only draws a PNG. So suggestions are
-# off, and PHP_EXTENSION_LIBS names freetype, the one suggestion gd needs,
-# beside libpng, which gd requires anyway. FrankenPHP's own suggestions,
-# brotli and watcher, are built regardless: build-static.sh appends brotli,
-# and PHP_EXTENSION_LIBS names watcher. test/extensions.sh fails the build if
-# gd gains a codec or loses FreeType or PNG.
-RUN sed -i 's/^  with-suggests: true$/  with-suggests: false/' /go/src/app/craft.yml
 # glibc
 # The plugins go through XCADDY_ARGS, which build-static.sh writes into
 # craft.yml. spc applies craft.yml's extra-env over the environment, so
 # SPC_CMD_VAR_FRANKENPHP_XCADDY_MODULES set here would lose to its unversioned
 # default and xcaddy would fetch the newest release of every plugin.
-# PHP_EXTENSION_LIBS replaces craft.yml's extra libraries, whose libavif and
-# nghttp2/3 and ngtcp2 serve extensions this build leaves out and are linked
-# by nothing. build-static.sh appends brotli, which caddy-cbrotli needs,
-# whatever this says.
+# PHP_EXTENSION_LIBS replaces craft.yml's extra libraries, whose nghttp2/3
+# and ngtcp2 serve extensions this build leaves out and are linked by
+# nothing. craft.yml's with-suggests stays on, as upstream ships it, so gd
+# still brings its suggested codecs, libavif among them. build-static.sh
+# appends brotli, which caddy-cbrotli needs, whatever this says.
 # spc asks the GitHub API which release of each library to fetch, and a call
 # refused at the unauthenticated rate limit fails the build. The token comes
 # as a secret, which no layer, history entry or cache key ever holds, as they

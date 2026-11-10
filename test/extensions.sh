@@ -39,13 +39,12 @@ for module in ${missing}; do
 done
 
 # results/index.php draws the share image with imagefttext() and imagepng(),
-# and nothing in LibreSpeed reads an image. So gd needs FreeType and PNG, and
-# a JPEG, WebP or AVIF codec would be decoder code that nothing calls. One
-# line per feature, "<name> <yes|no>", from gd's own report.
+# so gd needs FreeType and PNG. The codecs spc's suggestions add are not
+# checked either way. One line per feature, "<name> <yes|no>", from gd's own
+# report.
 read -r -d '' report <<'PHP' || true
 $info = function_exists('gd_info') ? gd_info() : [];
-$features = ['FreeType Support' => 'freetype', 'PNG Support' => 'png',
-    'JPEG Support' => 'jpeg', 'WebP Support' => 'webp', 'AVIF Support' => 'avif'];
+$features = ['FreeType Support' => 'freetype', 'PNG Support' => 'png'];
 foreach ($features as $key => $name) {
     echo $name, ' ', empty($info[$key]) ? 'no' : 'yes', "\n";
 }
@@ -54,11 +53,6 @@ gd=$("${BIN}" php-cli -r "${report}") || true
 for feature in freetype png; do
     if ! grep -qx "${feature} yes" <<<"${gd}"; then
         fail "gd_info() reports no ${feature} support, and the share image needs it."
-    fi
-done
-for feature in jpeg webp avif; do
-    if ! grep -qx "${feature} no" <<<"${gd}"; then
-        fail "gd_info() reports ${feature} support, which nothing uses. Did craft.yml's with-suggests come back on?"
     fi
 done
 
