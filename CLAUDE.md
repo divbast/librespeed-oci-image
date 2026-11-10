@@ -99,8 +99,11 @@ breaking change.
   Caddyfile unescaped: `TITLE`, `TAGLINE` and `GDPR_EMAIL` are escaped into the
   page, the settings files are `var_export` and `json_encode` output, and
   `TRUSTED_PROXIES` reaches `global.caddy` only as addresses PHP wrote back
-  itself with `inet_ntop`. The obfuscation salt is the one file written by
-  hand, in upstream's format, and its only variable part is `bin2hex` output
+  itself with `inet_ntop`. Four files are written by hand rather than by
+  those functions, and none holds an env value as it was given: `site.caddy`
+  is fixed text, `global.caddy` holds only the addresses `inet_ntop` wrote,
+  `stats-password.hash` only `password_hash()` output, and the obfuscation
+  salt, in upstream's format, only `bin2hex()` output
 - **Every variable is read through `envBool` or `envString` with a literal
   name, and is in the README's Env Vars table.** `test/env-docs.sh`, in
   `just lint`, fails otherwise, and fails on any read whose name is not
@@ -212,7 +215,8 @@ breaking change.
 - **The application tree stays root-owned and unwritten.** What changes per
   start lives in `/tmp/librespeed`, mode 0700. What outlives a start lives in
   `/data`: `telemetry.db`, `idObfuscation_salt.php`, `stats-password.hash`
-  (rewritten on every start that sets `STATS_PASSWORD`) and `stats-login.db`
+  (rewritten on every start with `TELEMETRY=true` and `STATS_PASSWORD` set)
+  and `stats-login.db`
 - **Never rewrite the obfuscation salt.** Every share link handed out was
   made with it. It is created once, when telemetry and obfuscation are both
   on and it is absent, and with `telemetry.db` it is one restore unit
