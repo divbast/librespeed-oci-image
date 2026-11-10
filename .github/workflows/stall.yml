@@ -17,11 +17,7 @@ on:
     - cron: '29 12 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: read # list Renovate's pull requests
-  actions: read # list the Renovate and build runs
-  checks: read # read each pull request's check runs
+permissions: {}
 
 # One run at a time; a second has nothing to add to the first.
 concurrency:
@@ -33,6 +29,11 @@ jobs:
     name: stall
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # list Renovate's pull requests
+      actions: read # list the Renovate and build runs
+      checks: read # read each pull request's check runs
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
