@@ -1,0 +1,420 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+
+# The lint job calls the justfile's recipes. The build and publish
+# jobs have no local equivalent to call and invoke their tools directly.
+#
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    #
+    # The daily slot, and the only automatic publish: it publishes main when
+    # main moved since the commit the published :latest was built from, so
+    # users see at most one new image a day however many merges land. It
+    # also checks whether something outside this repository has changed:
+    # the LibreSpeed tag and the commit it names, the FrankenPHP static
+    # builder's behaviour, the runner images, or the vulnerability database
+    # the scan reads, so a new advisory against the pinned image reaches
+    # code scanning within a day rather than a week.
+    # 18:47 UTC is 05:47 in Melbourne under daylight saving, 04:47 outside
+    # it: 30 minutes after the Baikal image's slot, so the two images' runs
+    # do not share the organisation's 20 concurrent jobs.
+    - cron: '47 18 * * *'
+  # The button: run from main, it publishes now, for an urgent fix.
+  workflow_dispatch:
+
+permissions: {}
+
+# GitHub keeps one pending run per group, and a newer one replaces it. The
+# event in the group stops a push run, frequent now that Renovate merges on
+# its own, from replacing a pending slot or button run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs mise.toml tools
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+
+      # Mise doesn't handle PHP tooling well so this is direct.
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.5'
+          coverage: none
+      - run: just setup
+      - run: just lint
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+
+      # The default docker driver cannot write an image index
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Pin the build clock to the commit
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "${GITHUB_ENV}"
+      # Never for the two events that publish, which build from scratch.
+      - name: Cache the build layers
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-${{ matrix.arch }}-${{ hashFiles('Containerfile') }}-${{ github.run_id }}
+          restore-keys: |
+            buildx-${{ matrix.arch }}-${{ hashFiles('Containerfile') }}-
+            buildx-${{ matrix.arch }}-
+
+      # An OCI layout is used to enable attestations
+      - name: Build the image
+        env:
+          # Read-only, for spc's calls to the GitHub API, which fail the
+          # build once the runner's unauthenticated rate limit runs out. It
+          # reaches build-static.sh as a secret, never a build argument.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          image=$(just --evaluate IMAGE)
+          args=(
+            --attest type=provenance,mode=max
+            --attest type=sbom
+            --secret id=github_token,env=GITHUB_TOKEN
+            --output type=oci,dest=/tmp/image.tar,rewrite-timestamp=true
+            -f Containerfile -t "${image}"
+          )
+          if [ "${GITHUB_EVENT_NAME}" = schedule ] ||
+            [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            # The daily slot and the button, the two runs that publish. These
+            # two stages are the only ones that reach outside this repository,
+            # so a cache hit on either means the daily build tested nothing
+            # upstream, and a publish would ship whatever a push or pull
+            # request last built: spc takes openssl and the other libraries
+            # at their newest release when the stage runs, so that can be
+            # older than what :latest already carries.
+            args+=(--no-cache-filter frankenphp-build --no-cache-filter fetch)
+          else
+            # reset=true replaces the export rather than appending to it, which
+            # stops the directory growing every run until it is too large to
+            # restore. Needs Buildx 0.35 or later; the runner has 0.36.
+            args+=(
+              --cache-from type=local,src=/tmp/.buildx-cache
+              --cache-to type=local,dest=/tmp/.buildx-cache,mode=max,reset=true
+            )
+          fi
+          docker buildx build "${args[@]}" .
+
+      # Every blob in the archive, attestations included. The provenance
+      # records each build argument, so a token passed as one shows here.
+      - name: Check the image for the token
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: test/token-leak.sh /tmp/image.tar
+
+      - name: Publish the image as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: /tmp/image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  test:
+    name: test
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        engine: [docker, podman]
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: /tmp
+
+      - name: Allow unprivileged user namespaces
+        if: matrix.engine == 'podman'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Rootless podman schedules an image HEALTHCHECK through a transient
+      # systemd user timer. A runner has no user session, so podman silently
+      # falls back to the cgroupfs manager, never runs the check, and leaves
+      # State.Health a nil pointer - which reads as a broken image rather than
+      # a runner that cannot schedule anything.
+      - name: Give podman a systemd user session
+        if: matrix.engine == 'podman'
+        run: |
+          sudo loginctl enable-linger "${USER}"
+          uid=$(id -u)
+          for _ in $(seq 30); do
+            [ -S "/run/user/${uid}/bus" ] && break
+            sleep 1
+          done
+          [ -S "/run/user/${uid}/bus" ] || {
+            echo "no user bus at /run/user/${uid}/bus after 30s" >&2
+            exit 1
+          }
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "${GITHUB_ENV}"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" \
+            >> "${GITHUB_ENV}"
+
+      - name: Use slirp4netns rather than pasta
+        if: matrix.engine == 'podman'
+        run: |
+          mkdir -p ~/.config/containers
+          printf '[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' \
+            > ~/.config/containers/containers.conf
+          podman info --format '{{.Host.RootlessNetworkCmd}}'
+          # systemd here, not cgroupfs, or the healthcheck timer never fires.
+          podman info --format '{{.Host.CgroupManager}}'
+
+      - name: Load the image under test
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          image=$(just --evaluate IMAGE)
+          case "${ENGINE}" in
+            docker) dest="docker-daemon:${image}" ;;
+            podman) dest="containers-storage:${image}" ;;
+            *) echo "unknown engine ${ENGINE}" >&2; exit 1 ;;
+          esac
+          skopeo --version
+          skopeo copy "oci-archive:/tmp/image.tar" "${dest}"
+          "${ENGINE}" image inspect "${image}" >/dev/null
+          "${ENGINE}" --version
+
+      - name: Acceptance suite
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: just acceptance
+
+  scan:
+    name: scan
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # upload the findings to code scanning, from main only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # For `just` and trivy.
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: /tmp
+
+      # Fails only on what the published image does not already have. Every
+      # finding, blocking or not, lands on the run's summary page.
+      - name: Vulnerability scan
+        env:
+          ARCHIVE: /tmp/image.tar
+        run: just scan
+
+      # Main's findings as code scanning alerts, which close by themselves once
+      # a later scan stops finding them. Even when the scan failed, so a finding
+      # that reached main is on record. Never from a pull request: GitHub would
+      # then add its own check comparing the PR with main, a second gate
+      # measured against something other than what is published.
+      - name: Upload the findings to code scanning
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: /tmp/image.tar.sarif
+          category: trivy-${{ matrix.arch }}
+
+  # The one check main's ruleset requires, so the job list can change without
+  # touching the ruleset. GitHub counts a skipped required check as passing,
+  # so this runs always and treats a skipped or cancelled job as a failure.
+  required:
+    name: required
+    needs: [lint, build, test, scan]
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail unless every needed job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in ${RESULTS}; do
+            if [ "${result}" != success ]; then
+              echo "a required job ended ${result}" >&2
+              exit 1
+            fi
+          done
+
+  publish:
+    name: publish
+    needs: [lint, test, scan]
+    # The daily slot and the button, from main only. A push never publishes.
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # The slot and the button each read :latest and then replace it. One at a
+    # time, or each could decide against an image the other is replacing.
+    # Queued rather than the default single pending slot, so a second
+    # publish waiting never cancels the first. The skipped publish job every
+    # pull request and push run carries never joins the group, as
+    # renovate.yml's skipped runs showed on 2026-10-29.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push the image and the attestation below
+      id-token: write # Sigstore signs against the runner's OIDC identity
+      attestations: write # actions/attest writes the provenance
+    steps:
+      # Full history, so the decision below can tell a newer commit from an
+      # older one
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # For jq
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+
+      # For `imagetools inspect` and `imagetools create`
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Publish, skip or fail. The slot skips when main has not moved since
+      # the published image, and :latest never moves backwards: a run that
+      # built an older commit would take back whatever the newer image fixed.
+      - name: Decide whether to publish
+        id: decide
+        run: |
+          # actions/checkout points origin/main at the commit this run built,
+          # not at main's tip, so a newer published commit would read as one
+          # that is not on main. The repository is public; no credentials.
+          git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          published=$(test/published-revision.sh ghcr.io/divbast/librespeed:latest)
+          test/publish-decision.sh "${GITHUB_EVENT_NAME}" "${GITHUB_SHA}" "${published}"
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: steps.decide.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each artifact lands in its own directory under this path
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.decide.outputs.publish == 'true'
+        with:
+          pattern: image-*
+          path: /tmp/images
+      - name: Read the LibreSpeed version from the Containerfile
+        if: steps.decide.outputs.publish == 'true'
+        id: version
+        run: |
+          v=$(grep -oP '^ARG LIBRESPEED_VERSION=\K.*' Containerfile)
+          if [ -z "${v}" ]; then
+            echo 'no ARG LIBRESPEED_VERSION line in Containerfile' >&2
+            exit 1
+          fi
+          echo "librespeed=${v}" >> "${GITHUB_OUTPUT}"
+      - name: Push each tested architecture
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.librespeed }}
+        run: |
+          for arch in amd64 arm64; do
+            skopeo copy --all \
+              --digestfile "/tmp/digest-${arch}" \
+              --dest-authfile "${HOME}/.docker/config.json" \
+              "oci-archive:/tmp/images/image-${arch}/image.tar" \
+              "docker://ghcr.io/divbast/librespeed:${VERSION}-${arch}"
+          done
+      # The description is what GHCR shows on the package page.
+      - name: Merge the architectures into one index
+        if: steps.decide.outputs.publish == 'true'
+        id: merge
+        env:
+          VERSION: ${{ steps.version.outputs.librespeed }}
+        run: |
+          created=$(date -u -d "@$(git log -1 --pretty=%ct)" +%Y-%m-%dT%H:%M:%SZ)
+          docker buildx imagetools create \
+            --metadata-file /tmp/index.json \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --annotation "index:org.opencontainers.image.created=${created}" \
+            --annotation "index:org.opencontainers.image.description=LibreSpeed speed test. Zero capabilities, read-only root, non-root, no shell" \
+            -t "ghcr.io/divbast/librespeed:${VERSION}" \
+            -t "ghcr.io/divbast/librespeed:latest" \
+            "ghcr.io/divbast/librespeed@$(cat /tmp/digest-amd64)" \
+            "ghcr.io/divbast/librespeed@$(cat /tmp/digest-arm64)"
+          digest=$(jq -er '."containerimage.descriptor".digest' /tmp/index.json)
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+      # BuildKit's is about what went into the image. This says the image came
+      # out of this repository's workflow, signed against the runner's OIDC
+      # identity
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: steps.decide.outputs.publish == 'true'
+        with:
+          subject-name: ghcr.io/divbast/librespeed
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
