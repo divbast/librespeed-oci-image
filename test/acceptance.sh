@@ -164,6 +164,27 @@ check_upload() {
     assert_eq "${UPLOAD_BYTES}" "${got}" "${what}: bytes the server read"
 }
 
+# A dot segment in the path picks the route by the path it resolves to, and
+# then FrankenPHP picks the script to run. That must be the script the route
+# allows: getIP.php's own answer, or a refusal. A helper such as
+# getIP_util.php answers 200 with an empty body instead.
+DOTSEG_CLIENT=203.0.113.9
+assert_getip_or_refused() {
+    local path="${1}" out status body
+    out=$(curl -s --path-as-is --max-time 5 -w '\n%{http_code}' \
+        -H "X-Forwarded-For: ${DOTSEG_CLIENT}" "${BASE}${path}")
+    status=${out##*$'\n'}
+    body=${out%$'\n'*}
+    case "${status}" in
+        200)
+            assert_eq "{\"processedString\":\"${DOTSEG_CLIENT}\",\"rawIspInfo\":\"\"}" "${body}" \
+                "GET ${path} runs getIP.php"
+            ;;
+        400 | 404) pass "GET ${path} is refused (${status})" ;;
+        *) fail "GET ${path}: expected getIP.php's answer or a refusal, got ${status}" ;;
+    esac
+}
+
 # Print a container's exit code once it has stopped, or "running" if it is
 # still up after the given number of seconds
 exit_code_within() {
@@ -298,6 +319,19 @@ done
 # the file server would open, not the one the client wrote
 for path in /frontend/../backend/geoip2.phar /frontend/%2e%2e/backend/geoip2.phar \
         /images/..%2fbackend/country_asn.mmdb; do
+    assert_status 404 "GET ${path}" --path-as-is "${BASE}${path}"
+done
+# Nor may a path that resolves onto an allowed route run some other script
+for path in /backend/getIP_util.php/../getIP.php /backend/getIP_util.php/%2e%2e/getIP.php \
+        /backend/getIP_util.php/%2E%2E/getIP.php /backend/getIP_util.php/.%2e/getIP.php \
+        /backend/getIP_ipInfo_apikey.php/../getIP.php /results/telemetry.php/../../backend/getIP.php \
+        /results/telemetry.php/%2e%2e/%2e%2e/backend/getIP.php /results/stats.php/../../backend/getIP.php \
+        /results/json.php/%2e%2e/%2e%2e/backend/getIP.php; do
+    assert_getip_or_refused "${path}"
+done
+# or reach, from an allowed one, a script the allowlist leaves out
+for path in /backend/getIP.php/../getIP_util.php /backend/getIP.php/%2e%2e/getIP_util.php \
+        /backend/getIP.php/../../results/telemetry.php /backend/empty.php/%2e%2e/%2e%2e/results/stats.php; do
     assert_status 404 "GET ${path}" --path-as-is "${BASE}${path}"
 done
 
