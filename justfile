@@ -87,5 +87,7 @@ lint: actions-check workflow-audit
     git ls-files '*.sh' | xargs -r shellcheck
     reuse lint
     vendor/bin/phpstan analyse --no-progress
+    # The README's Env Vars table names exactly the variables the image reads
+    ./test/env-docs.sh
 
 ci: lint test archive token-check scan

@@ -192,10 +192,14 @@ ENV XDG_DATA_HOME=/tmp \
 COPY --chown=root:root --chmod=0755 rootfs/usr/local/bin/librespeed-bootstrap /usr/local/bin/librespeed-bootstrap
 COPY --chown=root:root --chmod=0755 rootfs/usr/local/bin/librespeed-health /usr/local/bin/librespeed-health
 
+# The licences: this repository's, LibreSpeed's, IPinfo's for the ISP
+# database, and Open Sans's and Inter's for the fonts. The README's
+# "Licences in the image" says which file carries which.
 LABEL org.opencontainers.image.source="https://github.com/divbast/librespeed-oci-image" \
     org.opencontainers.image.url="https://github.com/divbast/librespeed-oci-image" \
     org.opencontainers.image.title="LibreSpeed" \
-    org.opencontainers.image.version="${LIBRESPEED_VERSION}"
+    org.opencontainers.image.version="${LIBRESPEED_VERSION}" \
+    org.opencontainers.image.licenses="BSD-2-Clause AND LGPL-3.0-or-later AND CC-BY-SA-4.0 AND Apache-2.0 AND OFL-1.1"
 
 EXPOSE 8080 8081
 # Exec form: the shell form would need /bin/sh, which the image lacks.
