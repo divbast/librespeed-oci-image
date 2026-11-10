@@ -20,6 +20,14 @@ NET=librespeed-acc-net
 INTERNAL_NET=librespeed-acc-internal-net
 # Sections 9 to 12 run one container at a time on this port
 TEL_PORT=18192
+# Rootless Podman hands the server a published port's connections from the
+# server's own address, not the gateway's as Docker does, and a container
+# run again draws a new one. So every container on TEL_PORT takes the same
+# fixed address, or section 15's restart would face a new client and prove
+# nothing about failures kept on /data. The others draw from the lower half.
+NET_SUBNET=10.89.66.0/24
+NET_RANGE=10.89.66.0/25
+TEL_IP=10.89.66.200
 TEL_BASE="http://127.0.0.1:${TEL_PORT}"
 TEL_CTR=librespeed-acc-telemetry
 REFUSED_CTR=librespeed-acc-refused
@@ -257,8 +265,8 @@ start_served() {
     local ctr="${1}" deadline=$(( SECONDS + WAIT_FOR_PORT_SECONDS )) status running
     shift
     "${ENGINE}" rm -f "${ctr}" >/dev/null 2>&1
-    if ! "${ENGINE}" run -d --name "${ctr}" "${CONFINE[@]}" --network "${NET}" -p "${TEL_PORT}:8080" \
-            "${@}" "${IMAGE}" >/dev/null; then
+    if ! "${ENGINE}" run -d --name "${ctr}" "${CONFINE[@]}" --network "${NET}" --ip "${TEL_IP}" \
+            -p "${TEL_PORT}:8080" "${@}" "${IMAGE}" >/dev/null; then
         fail "${ctr}: ${ENGINE} run ${*} failed"
         return 1
     fi
@@ -632,7 +640,7 @@ cleanup() {
 trap 'cleanup; rm -rf "${WORK}"' EXIT
 cleanup
 
-"${ENGINE}" network create "${NET}" >/dev/null
+"${ENGINE}" network create --subnet "${NET_SUBNET}" --ip-range "${NET_RANGE}" "${NET}" >/dev/null
 
 echo '== 1. runs under the exact contract, with no volume'
 "${ENGINE}" run -d --name "${CTR}" "${CONFINE[@]}" \
