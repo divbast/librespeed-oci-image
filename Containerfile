@@ -131,13 +131,13 @@ RUN set -eux; \
     fi
 COPY test/upstream-layout.sh /tmp/upstream-layout.sh
 RUN /tmp/upstream-layout.sh /src
-# Only what is served, plus the licence. index-modern.html is a template the
-# bootstrap renders into /tmp/librespeed/index.html on every start, and is
-# never served itself. Nor is frontend/index.html, upstream's raw copy of
-# that page with its placeholders still in, or background-original.jpeg,
-# which nothing references. The symlinks dangle until the bootstrap runs:
-# everything that changes per start lives on the /tmp tmpfs, and the
-# obfuscation salt on /data.
+# Only what is served, plus the licence. index-modern.html and settings.json
+# are templates the bootstrap renders into /tmp/librespeed on every start,
+# and are never served themselves. Nor is frontend/index.html, upstream's raw
+# copy of that page with its placeholders still in, or
+# background-original.jpeg, which nothing references. The symlinks dangle
+# until the bootstrap runs: everything that changes per start lives on the
+# /tmp tmpfs, and the obfuscation salt on /data.
 RUN set -eux; \
     out=/out/librespeed; \
     mkdir -p "${out}/backend" "${out}/results" /out/librespeed-templates /data; \
@@ -153,7 +153,7 @@ RUN set -eux; \
     cp /src/results/telemetry.php /src/results/telemetry_db.php /src/results/json.php \
         /src/results/index.php /src/results/stats.php /src/results/idObfuscation.php \
         /src/results/OpenSans-*.ttf "${out}/results/"; \
-    cp /src/index-modern.html /out/librespeed-templates/index-modern.html; \
+    cp /src/index-modern.html /src/settings.json /out/librespeed-templates/; \
     ln -s /tmp/librespeed/index.html "${out}/index.html"; \
     ln -s /tmp/librespeed/settings.json "${out}/settings.json"; \
     ln -s /tmp/librespeed/server-list.json "${out}/server-list.json"; \

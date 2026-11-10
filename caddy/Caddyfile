@@ -12,14 +12,37 @@
 	import /tmp/librespeed/caddy/global.caddy
 }
 
+# An allowlist: what is not named here, or in site.caddy, is a 404. That keeps
+# upstream's helpers, its data files and its other pages unreachable although
+# they sit in the same tree.
 :8080 {
 	root /var/www/librespeed
+
+	# The speed test's three endpoints, the only PHP served unconditionally
+	@speedtest path /backend/empty.php /backend/garbage.php /backend/getIP.php
+	handle @speedtest {
+		php
+	}
+
+	@static {
+		# The modern UI the bootstrap renders, and its generated config
+		path / /settings.json /server-list.json /servers.json
+		# The speed test's client and the stability test
+		path /speedtest.js /speedtest_worker.js /stability.html /stability_worker.js
+		# What both pages load
+		path /favicon.ico /manifest.webmanifest /images/* /frontend/*
+	}
+	handle @static {
+		file_server
+	}
 
 	# Written by the bootstrap on every start: the routes only some
 	# settings turn on
 	import /tmp/librespeed/caddy/site.caddy
 
-	php_server
+	handle {
+		respond 404
+	}
 
 	log {
 		output stdout

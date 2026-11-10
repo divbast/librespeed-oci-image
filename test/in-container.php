@@ -13,7 +13,8 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini is the exception: it prints one JSON object and asserts nothing.
+ * php-ini and probe-getip are the exceptions: they print what they read and
+ * assert nothing.
  */
 
 /**
@@ -27,6 +28,9 @@ const EGRESS_PROBE_PORT = 443;
 const EGRESS_PROBE_TIMEOUT = 3;
 const ROOT_WRITE_PROBE = '/.librespeed-write-probe';
 const READ_ONLY_ERROR = 'Read-only file system';
+const LOOPBACK_HOST = '127.0.0.1';
+const LOOPBACK_PORT = 8080;
+const LOOPBACK_TIMEOUT = 5;
 
 /**
  * Collects assertions and renders them in the record format above.
@@ -194,11 +198,55 @@ function iniEnabled(string $directive): bool
 
 function phpIni(): void
 {
+    $postMaxSize = (string) ini_get('post_max_size');
+
     fwrite(STDOUT, json_encode([
         'allow_url_fopen' => iniEnabled('allow_url_fopen'),
         'display_errors' => iniEnabled('display_errors'),
-        'post_max_size' => (string) ini_get('post_max_size'),
+        'post_max_size' => $postMaxSize,
+        // In bytes, as PHP reads the K, M and G suffixes
+        'post_max_size_bytes' => ini_parse_quantity($postMaxSize),
     ], JSON_THROW_ON_ERROR) . "\n");
+}
+
+/**
+ * Prints the body of GET /backend/getIP.php as the server answers it over
+ * loopback. allow_url_fopen is off for this SAPI too, so it speaks HTTP over
+ * a bare socket. HTTP/1.0 keeps the answer unchunked, ending where the
+ * server closes the connection.
+ */
+function probeGetIp(): void
+{
+    $errno = 0;
+    $errstr = '';
+    $socket = @fsockopen(LOOPBACK_HOST, LOOPBACK_PORT, $errno, $errstr, LOOPBACK_TIMEOUT);
+    if ($socket === false) {
+        throw new RuntimeException(sprintf(
+            'cannot connect to %s:%d (errno %d: %s)',
+            LOOPBACK_HOST,
+            LOOPBACK_PORT,
+            $errno,
+            $errstr,
+        ));
+    }
+
+    stream_set_timeout($socket, LOOPBACK_TIMEOUT);
+    $request = "GET /backend/getIP.php HTTP/1.0\r\nHost: " . LOOPBACK_HOST . ':' . LOOPBACK_PORT . "\r\n\r\n";
+    $sent = fwrite($socket, $request);
+    $response = stream_get_contents($socket);
+    fclose($socket);
+
+    if ($sent !== strlen($request) || $response === false) {
+        throw new RuntimeException('the exchange with ' . LOOPBACK_HOST . ':' . LOOPBACK_PORT . ' broke off');
+    }
+
+    $parts = explode("\r\n\r\n", $response, 2);
+    $statusLine = strtok($parts[0], "\r\n");
+    if (!isset($parts[1]) || $statusLine === false || preg_match('#^HTTP/\d\.\d 200 #', $statusLine) !== 1) {
+        throw new RuntimeException('expected a 200 response, got: ' . ($statusLine === false ? 'nothing' : $statusLine));
+    }
+
+    fwrite(STDOUT, $parts[1]);
 }
 
 // --- dispatch ---------------------------------------------------------------
@@ -215,6 +263,7 @@ function commands(): array
         'assert-read-only' => ['arguments' => [], 'handler' => assertReadOnly(...)],
         'probe-egress' => ['arguments' => [], 'handler' => probeEgress(...)],
         'php-ini' => ['arguments' => [], 'handler' => phpIni(...)],
+        'probe-getip' => ['arguments' => [], 'handler' => probeGetIp(...)],
     ];
 }
 

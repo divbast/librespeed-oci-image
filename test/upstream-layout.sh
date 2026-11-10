@@ -18,6 +18,7 @@ fail() {
 
 FILES=(
     index-modern.html
+    settings.json
     speedtest.js
     speedtest_worker.js
     stability.html
@@ -50,8 +51,9 @@ contains() {
         || fail "${file} no longer contains the marker: ${marker}"
 }
 
+contains index-modern.html '<title>LibreSpeed - Free and Open Source Speedtest</title>'
 contains index-modern.html '<h1>Free and Open Source Speedtest.</h1>'
-contains index-modern.html '<p class="tagline">'
+contains index-modern.html '<p class="tagline">No Flash, No Java, No Websockets, No Bullsh*t</p>'
 contains index-modern.html 'mailto:PUT@YOUR_EMAIL.HERE'
 contains index-modern.html 'TO BE FILLED BY DEVELOPER'
 contains index-modern.html 'var SPEEDTEST_SERVERS = "server-list.json";'

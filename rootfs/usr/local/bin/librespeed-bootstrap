@@ -14,6 +14,16 @@ const CADDYFILE = '/etc/frankenphp/Caddyfile';
 // Everything written per start, on the /tmp tmpfs. The image's own symlinks
 // and the Caddyfile's imports point here.
 const GENERATED_DIR = '/tmp/librespeed';
+// Upstream's files the bootstrap renders from, kept out of the served tree
+const TEMPLATES_DIR = '/usr/local/share/librespeed-templates';
+
+// index-modern.html's own text, found and replaced as upstream's entrypoint
+// does. test/upstream-layout.sh fails the build on a release that drops one.
+const TITLE_MARKER = '<title>LibreSpeed - Free and Open Source Speedtest</title>';
+const HEADING_MARKER = '<h1>Free and Open Source Speedtest.</h1>';
+const TAGLINE_MARKER = '<p class="tagline">No Flash, No Java, No Websockets, No Bullsh*t</p>';
+const MAILTO_MARKER = 'mailto:PUT@YOUR_EMAIL.HERE';
+const EMAIL_MARKER = 'TO BE FILLED BY DEVELOPER';
 
 function fail(string $msg): never {
     fwrite(STDERR, "librespeed-bootstrap: $msg\n");
@@ -23,6 +33,105 @@ function fail(string $msg): never {
 function info(string $msg): void {
     fwrite(STDOUT, "librespeed-bootstrap: $msg\n");
 }
+
+/**
+ * Unset or empty is the default. Anything but exactly true or false stops the
+ * start: a typo must never quietly mean the default.
+ */
+function envBool(string $name, bool $default): bool {
+    $value = getenv($name);
+    if ($value === false || $value === '') {
+        return $default;
+    }
+
+    return match ($value) {
+        'true' => true,
+        'false' => false,
+        default => fail("$name must be true or false"),
+    };
+}
+
+function envString(string $name): ?string {
+    $value = getenv($name);
+
+    return $value === false || $value === '' ? null : $value;
+}
+
+function escapeHtml(string $text): string {
+    return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
+/**
+ * Upstream's modern page with the operator's title, tagline and contact
+ * address in place of its own. Every marker must be there exactly once
+ * whatever is set, so a changed template stops every start, not only the
+ * ones that set a variable. strtr() makes one pass, so a value that happens
+ * to contain another marker is never replaced in its turn.
+ */
+function renderIndex(string $template, ?string $title, ?string $tagline, ?string $email): string {
+    foreach ([TITLE_MARKER, HEADING_MARKER, TAGLINE_MARKER, MAILTO_MARKER, EMAIL_MARKER] as $marker) {
+        $count = substr_count($template, $marker);
+        if ($count !== 1) {
+            fail("index-modern.html holds $count copies of '$marker', where it should hold one");
+        }
+    }
+
+    $replacements = [];
+    if ($title !== null) {
+        $replacements[TITLE_MARKER] = '<title>' . escapeHtml($title) . ' - Free and Open Source Speedtest</title>';
+        $replacements[HEADING_MARKER] = '<h1>' . escapeHtml($title) . '</h1>';
+    }
+    if ($tagline !== null) {
+        $replacements[TAGLINE_MARKER] = '<p class="tagline">' . escapeHtml($tagline) . '</p>';
+    }
+    if ($email !== null) {
+        $replacements[MAILTO_MARKER] = 'mailto:' . escapeHtml($email);
+        $replacements[EMAIL_MARKER] = escapeHtml($email);
+    }
+
+    return strtr($template, $replacements);
+}
+
+/**
+ * Written beside its final name, then renamed over it, so the server never
+ * reads half a file.
+ */
+function writeGenerated(string $name, string $content): void {
+    $path = GENERATED_DIR . "/$name";
+    $staging = "$path.new";
+    if (@file_put_contents($staging, $content) === false
+        || !@chmod($staging, 0o644)
+        || !@rename($staging, $path)) {
+        @unlink($staging);
+        fail("cannot write $path");
+    }
+}
+
+function readTemplate(string $name): string {
+    $path = TEMPLATES_DIR . "/$name";
+    $content = @file_get_contents($path);
+    if ($content === false) {
+        fail("cannot read $path: this is not a complete LibreSpeed image");
+    }
+
+    return $content;
+}
+
+/**
+ * @param array<mixed>|stdClass $value
+ */
+function toJson(array|stdClass $value): string {
+    return json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
+}
+
+// Every variable is read and checked before anything is written
+$telemetry = envBool('TELEMETRY', false);
+if ($telemetry) {
+    fail('TELEMETRY=true needs a telemetry backend this image does not have yet');
+}
+$title = envString('TITLE');
+$tagline = envString('TAGLINE');
+$email = envString('GDPR_EMAIL');
 
 foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
     if (!is_dir($dir) && !@mkdir($dir, 0o700)) {
@@ -35,18 +144,40 @@ foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
     }
 }
 
-// The Caddyfile imports both files unconditionally, so each must exist even
-// when it has nothing to say.
-$snippets = [
-    'global.caddy' => "# librespeed-bootstrap: no global options\n",
-    'site.caddy' => "# librespeed-bootstrap: no optional routes\n",
-];
-foreach ($snippets as $name => $content) {
-    $path = GENERATED_DIR . "/caddy/$name";
-    if (@file_put_contents($path, $content) === false) {
-        fail("cannot write $path");
-    }
+// Upstream's settings, kept as objects where they are objects, with the
+// telemetry level this start allows
+try {
+    $settings = json_decode(readTemplate('settings.json'), false, 512, JSON_THROW_ON_ERROR);
+} catch (JsonException $e) {
+    fail('upstream settings.json is not JSON: ' . $e->getMessage());
 }
+if (!$settings instanceof stdClass) {
+    fail('upstream settings.json is not a JSON object');
+}
+$settings->telemetry_level = 'off';
+
+// The local backend alone, in the shape upstream's entrypoint writes for
+// standalone mode. A relative server keeps every test on the origin the
+// page came from.
+$servers = [[
+    'name' => 'local',
+    'server' => '/backend',
+    'dlURL' => 'garbage.php',
+    'ulURL' => 'empty.php',
+    'pingURL' => 'empty.php',
+    'getIpURL' => 'getIP.php',
+    'sponsorName' => '',
+    'sponsorURL' => '',
+    'id' => 1,
+]];
+
+writeGenerated('index.html', renderIndex(readTemplate('index-modern.html'), $title, $tagline, $email));
+writeGenerated('settings.json', toJson($settings));
+writeGenerated('server-list.json', toJson($servers));
+// The Caddyfile imports both snippets unconditionally, so each must exist
+// even when it has nothing to say.
+writeGenerated('caddy/global.caddy', "# librespeed-bootstrap: no global options\n");
+writeGenerated('caddy/site.caddy', "# librespeed-bootstrap: no optional routes\n");
 
 info('ready');
 
