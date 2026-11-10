@@ -1,0 +1,139 @@
+#!/usr/bin/env php
+<?php
+
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
+
+declare(strict_types=1);
+
+/*
+ * The container's health probe, and what HEALTHCHECK runs. It asks two
+ * things, and neither implies the other:
+ *
+ * - /healthz on :8081 is the server's own account of what it needs: its PHP
+ *   settings, the offline ISP database and, with telemetry on, the results
+ *   database. It never goes through :8080's routes;
+ * - getIP.php on :8080 is the first thing a browser asks the speed test,
+ *   and only its exact answer shows Caddy routing the test to PHP, and PHP
+ *   running upstream's code.
+ *
+ * It exits 0, or 1 with a line naming each half that failed and why.
+ * Bare sockets, because allow_url_fopen is off.
+ */
+
+const HOST = '127.0.0.1';
+const HEALTH_PORT = 8081;
+const SITE_PORT = 8080;
+// Each exchange's whole budget, from connecting to the server closing.
+// HEALTHCHECK's --timeout must clear both, one after the other.
+const TIMEOUT = 4.0;
+// Neither answer comes anywhere near this
+const MAX_ANSWER_BYTES = 65536;
+// What getIP.php answers a client on loopback that asks for no ISP
+const GETIP_LOOPBACK = '{"processedString":"127.0.0.1","rawIspInfo":""}';
+
+/**
+ * One GET, over HTTP/1.0 so the answer is never chunked and ends where the
+ * server closes the connection.
+ *
+ * @return array{status: string, body: string}|string the answer, or why
+ *         there is none
+ */
+function get(int $port, string $path): array|string
+{
+    $deadline = microtime(true) + TIMEOUT;
+    $errno = 0;
+    $errstr = '';
+    $socket = @fsockopen(HOST, $port, $errno, $errstr, TIMEOUT);
+    if ($socket === false) {
+        return sprintf('no connection (errno %d: %s)', $errno, $errstr);
+    }
+
+    $request = "GET $path HTTP/1.0\r\nHost: " . HOST . ":$port\r\nConnection: close\r\n\r\n";
+    $answer = '';
+    try {
+        if (fwrite($socket, $request) !== strlen($request)) {
+            return 'the request could not be sent';
+        }
+        while (!feof($socket)) {
+            $left = $deadline - microtime(true);
+            if ($left <= 0) {
+                return sprintf('no whole answer within %g s', TIMEOUT);
+            }
+            stream_set_timeout($socket, (int) $left, (int) (($left - floor($left)) * 1e6));
+            $chunk = fread($socket, 8192);
+            if ($chunk === false || stream_get_meta_data($socket)['timed_out']) {
+                return sprintf('no whole answer within %g s', TIMEOUT);
+            }
+            $answer .= $chunk;
+            if (strlen($answer) > MAX_ANSWER_BYTES) {
+                return sprintf('an answer over %d bytes', MAX_ANSWER_BYTES);
+            }
+        }
+    } finally {
+        fclose($socket);
+    }
+
+    $parts = explode("\r\n\r\n", $answer, 2);
+    if (count($parts) !== 2 || preg_match('#\AHTTP/\d\.\d (\d{3})[ \r]#', $parts[0], $status) !== 1) {
+        return 'no HTTP answer';
+    }
+
+    return ['status' => $status[1], 'body' => $parts[1]];
+}
+
+/**
+ * Text from an answer, safe to put on one line of the probe's own
+ */
+function oneLine(string $text): string
+{
+    return trim((string) preg_replace('/[^\x20-\x7e]+/', ' | ', $text), " |");
+}
+
+/**
+ * Prints why a half failed, if it did, and says whether it did
+ */
+function failed(int $port, string $path, string $expected, ?string $found): bool
+{
+    if ($found === null) {
+        return false;
+    }
+    fwrite(STDERR, sprintf("librespeed-health: http://%s:%d%s: expected %s, got %s\n", HOST, $port, $path, $expected, $found));
+
+    return true;
+}
+
+/**
+ * Exactly 200. A 503 names each failed check on a line of its own, and
+ * those lines are the one record of why, so they are passed on.
+ */
+function checkHealthz(): ?string
+{
+    $answer = get(HEALTH_PORT, '/healthz');
+    if (is_string($answer)) {
+        return $answer;
+    }
+
+    return $answer['status'] === '200' ? null : rtrim($answer['status'] . ': ' . oneLine($answer['body']), ': ');
+}
+
+/**
+ * Exactly 200 with the loopback answer
+ */
+function checkGetIp(): ?string
+{
+    $answer = get(SITE_PORT, '/backend/getIP.php');
+    if (is_string($answer)) {
+        return $answer;
+    }
+
+    return $answer['status'] === '200' && $answer['body'] === GETIP_LOOPBACK
+        ? null
+        : rtrim($answer['status'] . ' ' . oneLine(substr($answer['body'], 0, 200)));
+}
+
+// Both halves run, whatever the first says
+$healthz = failed(HEALTH_PORT, '/healthz', '200', checkHealthz());
+$getIp = failed(SITE_PORT, '/backend/getIP.php', '200 ' . GETIP_LOOPBACK, checkGetIp());
+
+exit($healthz || $getIp ? 1 : 0);
