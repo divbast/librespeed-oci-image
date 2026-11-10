@@ -26,6 +26,19 @@ REFUSED_CTR=librespeed-acc-refused
 TEL_VOL=librespeed-acc-telemetry
 PERSIST_VOL=librespeed-acc-persist
 REFUSED_VOL=librespeed-acc-refused
+# Sections 13 to 15 use TEL_CTR and TEL_PORT too
+STATS_VOL=librespeed-acc-stats
+STATS_URL="${TEL_BASE}/results/stats.php"
+STATS_PASSWORD_VALUE=correct-horse
+# Section 16: the server, and a second container of the same image in front
+# of it as its proxy, on a network whose addresses the server trusts
+PROXY_NET=librespeed-acc-proxy-net
+PROXY_SUBNET=10.89.77.0/24
+PROXIED_CTR=librespeed-acc-proxied
+PROXIED_IP=10.89.77.10
+PROXIED_VOL=librespeed-acc-proxied
+PROXY_CTR=librespeed-acc-proxy
+PROXY_IP=10.89.77.20
 
 # The size the README states. Every container here gets exactly this, so no
 # check passes on more room than the contract grants.
@@ -355,11 +368,99 @@ assert_same_salt() {
     fi
 }
 
+# Every way a client might write a login to stats.php. PHP takes the last of
+# a repeated key, and Caddy's query matcher matches any of them. PHP also
+# drops a key's leading spaces and cuts it at a NUL, while Caddy matches a
+# key as written and refuses to match at all on a query it cannot parse: a
+# stray ; or a bad escape. So several of these say op=login to PHP but not
+# to Caddy.
+STATS_PATHS=(
+    '/results/stats.php'
+    '/results/stats.php?op=login'
+    '/results/stats.php?op=x&op=login'
+    '/results/stats.php?op=login&op=x'
+    '/results/stats.php?op=%6cogin'
+    '/results/stats.php?%6fp=login'
+    '/results/stats.php?OP=login'
+    '/results/stats.php?op=LOGIN'
+    '/results/stats.php?op%00=login'
+    '/results/stats.php?%20op=login'
+    '/results/stats.php?+op=login'
+    '/results/stats.php?x=;&op=login'
+    '/results/stats.php?op=login&x=%zz'
+    '/results/stats.php?op[]=login'
+    '/RESULTS/STATS.PHP?op=login'
+    '/results/./stats.php?op%00=login'
+    '/results//stats.php?%20op=login'
+    '/results/%73tats.php?op%00=login'
+    '/results/json.php/../stats.php?op=login'
+    '/results/json.php/%2e%2e/stats.php?op%00=login'
+    '/backend/getIP.php/../../results/stats.php?x=;&op=login'
+)
+
+# POST a password to a stats URL as upstream's login form does, with the
+# cookie jar given. Sets STATUS, LOCATION, RETRY_AFTER, SENT (the bytes of
+# the body) and BODY.
+stats_login() {
+    local url="${1}" password="${2}" jar="${3}" out
+    shift 3
+    out=$(curl -s -g --path-as-is --max-time 10 -c "${jar}" -b "${jar}" -D "${WORK}/headers" \
+        -o "${WORK}/body" -w '%{http_code} %{size_upload}' --data-urlencode "password=${password}" \
+        "${@}" "${url}")
+    STATUS=${out% *}
+    SENT=${out#* }
+    LOCATION=$(tr -d '\r' <"${WORK}/headers" | awk 'tolower($1) == "location:" { print $2 }')
+    RETRY_AFTER=$(tr -d '\r' <"${WORK}/headers" | awk 'tolower($1) == "retry-after:" { print $2 }')
+    BODY=$(<"${WORK}/body")
+}
+
+# The stats page as the holder of a cookie jar sees it
+stats_page() {
+    curl -s --max-time 10 -c "${1}" -b "${1}" "${STATS_URL}"
+}
+
+# The PHP session id a cookie jar holds
+session_id() {
+    awk '$6 == "PHPSESSID" { id = $7 } END { print id }' "${1}" 2>/dev/null
+}
+
+# login.php's failures still inside its window, as client=count lines. It
+# opens the database read-only, so it never creates one.
+failure_buckets() {
+    php_in "${1}" 'echo json_encode((new PDO("sqlite:/data/stats-login.db", null, null,
+            [Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]))
+        ->query("SELECT client, COUNT(*) FROM failures WHERE at > " . (time() - 900) . " GROUP BY client ORDER BY client")
+        ->fetchAll(PDO::FETCH_KEY_PAIR)), "\n";' | jq -r 'to_entries[] | "\(.key)=\(.value)"' 2>&1
+}
+
+# A generated file, as the running server reads it
+generated_file() {
+    php_in "${1}" "readfile('/tmp/librespeed/${2}');"
+}
+
+# The client-address options of every server, as the running server adapts
+# its own Caddyfile
+client_ip_options() {
+    "${ENGINE}" exec "${1}" "${PHP_BIN}" adapt --config /etc/frankenphp/Caddyfile 2>/dev/null \
+        | jq -c '[.apps.http.servers[] | {trusted_proxies, trusted_proxies_strict, client_ip_headers}] | unique' 2>&1
+}
+
+# One request from the proxy container to the server behind it. Sets
+# PROXY_STATUS. On failure it is the probe's FAIL record, which no check
+# takes for a status.
+proxy_request() {
+    local method="${1}" path="${2}" headers="${3}" body="${4}" out
+    out=$("${ENGINE}" exec "${PROXY_CTR}" "${PHP_BIN}" php-cli "${PROBE}" http-request "${method}" \
+        "http://${PROXIED_IP}:8080${path}" "${headers}" "${body}" 2>&1)
+    PROXY_STATUS=${out%%$'\n'*}
+}
+
 cleanup() {
     "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
-        "${REFUSED_CTR}" >/dev/null 2>&1 || true
-    "${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" >/dev/null 2>&1 || true
-    "${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" >/dev/null 2>&1 || true
+        "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
+    "${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" "${PROXY_NET}" >/dev/null 2>&1 || true
+    "${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" "${STATS_VOL}" \
+        "${PROXIED_VOL}" >/dev/null 2>&1 || true
 }
 trap 'cleanup; rm -rf "${WORK}"' EXIT
 cleanup
@@ -779,6 +880,252 @@ start_served "${TEL_CTR}" -v "${PERSIST_VOL}:/data" -e TELEMETRY=true -e ENABLE_
 assert_same_salt 'with telemetry on again'
 answer=$(result_json "${obfuscated}")
 assert_eq "${RESULT_JSON}" "${answer}" "with telemetry on again: GET /results/json.php?id=${obfuscated}"
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+
+echo '== 13. no STATS_PASSWORD: neither stats.php nor the login answers, however it is asked for'
+"${ENGINE}" volume create "${STATS_VOL}" >/dev/null
+start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true
+for path in "${STATS_PATHS[@]}" /results/login.php /login.php; do
+    assert_status 404 "GET ${path}" -g --path-as-is "${TEL_BASE}${path}"
+    assert_status 404 "POST ${path}" -g --path-as-is --data-urlencode "password=${STATS_PASSWORD_VALUE}" \
+        "${TEL_BASE}${path}"
+done
+hash=$(php_in "${TEL_CTR}" 'echo file_exists("/data/stats-password.hash") ? "present" : "absent";')
+assert_eq absent "${hash}" 'no /data/stats-password.hash'
+# Set while telemetry is off, it is named and ignored
+start_served "${TEL_CTR}" -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}"
+assert_contains 'TELEMETRY is off, so these are ignored: STATS_PASSWORD' \
+    'STATS_PASSWORD without TELEMETRY: the log says it is ignored' "${ENGINE}" logs "${TEL_CTR}"
+assert_lacks "${STATS_PASSWORD_VALUE}" 'STATS_PASSWORD without TELEMETRY: the log never shows it' \
+    "${ENGINE}" logs "${TEL_CTR}"
+assert_status 404 'GET /results/stats.php with only STATS_PASSWORD set' "${STATS_URL}"
+assert_status 404 'POST /results/stats.php?op=login with only STATS_PASSWORD set' \
+    --data-urlencode "password=${STATS_PASSWORD_VALUE}" "${STATS_URL}?op=login"
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+# bcrypt reads the first 72 bytes and ignores the rest
+printf -v long '%073d' 0
+assert_refused 'a STATS_PASSWORD of 73 bytes' 'STATS_PASSWORD is 73 bytes long' -e "STATS_PASSWORD=${long}"
+
+echo "== 14. STATS_PASSWORD set: upstream's own form posts into the image's login"
+start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}"
+hash=$(php_in "${TEL_CTR}" 'const HASH = "/data/stats-password.hash";
+    echo json_encode(["mode" => sprintf("%04o", (int) @fileperms(HASH) & 0o7777),
+        "algo" => password_get_info((string) @file_get_contents(HASH))["algoName"],
+        "verifies" => password_verify("correct-horse", (string) @file_get_contents(HASH)),
+        "plain" => str_contains((string) @file_get_contents(HASH), "correct-horse")]), "\n";')
+assert_eq '{"mode":"0600","algo":"bcrypt","verifies":true,"plain":false}' "${hash}" '/data/stats-password.hash'
+assert_lacks "${STATS_PASSWORD_VALUE}" 'the log never shows STATS_PASSWORD' "${ENGINE}" logs "${TEL_CTR}"
+# The server starts without it, so no PHP the server runs can read it back.
+# TELEMETRY shows the environment was read at all.
+environ=$(php_in "${TEL_CTR}" 'const ENVIRON = "/proc/1/environ";
+    echo json_encode(["read" => @file_get_contents(ENVIRON) !== false,
+        "TELEMETRY" => str_contains((string) @file_get_contents(ENVIRON), "TELEMETRY=true"),
+        "STATS_PASSWORD" => str_contains((string) @file_get_contents(ENVIRON), "STATS_PASSWORD=")]), "\n";')
+assert_eq '{"read":true,"TELEMETRY":true,"STATS_PASSWORD":false}' "${environ}" "the server's environment"
+
+jar="${WORK}/jar-14"
+rm -f "${jar}"
+assert_status 200 'GET /results/stats.php' "${STATS_URL}"
+page=$(stats_page "${jar}")
+assert_contains '<form action="stats.php?op=login" method="POST">' "GET /results/stats.php is upstream's login form" \
+    printf '%s' "${page}"
+before=$(session_id "${jar}")
+stats_login "${STATS_URL}?op=login" wrong "${jar}"
+assert_eq 403 "${STATUS}" 'POST /results/stats.php?op=login with a wrong password'
+assert_contains '<form action="stats.php?op=login" method="POST">' 'a wrong password: the form again' \
+    printf '%s' "${BODY}"
+buckets=$(failure_buckets "${TEL_CTR}")
+if [[ "${buckets}" =~ ^[0-9a-f.:]+=1$ ]]; then
+    pass "the wrong password is recorded (${buckets})"
+else
+    fail "the wrong password is recorded: expected '<address>=1', got '${buckets}'"
+fi
+limit=$(probe_out php-ini | jq -er '.post_max_size_bytes' 2>/dev/null)
+if [[ "${SENT}" =~ ^[0-9]+$ && "${limit}" =~ ^[0-9]+$ ]] && (( SENT > 0 && SENT < limit )); then
+    pass "the login fits post_max_size (${SENT} of ${limit} bytes)"
+else
+    fail "the login fits post_max_size: sent '${SENT}' bytes, the limit is '${limit}'"
+fi
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq '303 /results/stats.php' "${STATUS} ${LOCATION}" 'POST /results/stats.php?op=login with the right password'
+after=$(session_id "${jar}")
+if [[ -n "${before}" && -n "${after}" && "${before}" != "${after}" ]]; then
+    pass "the login hands out a new session id (${before} became ${after})"
+else
+    fail "the login hands out a new session id: got '${before}', then '${after}'"
+fi
+assert_contains 'value="Logout"' 'following it with the cookie, GET /results/stats.php is logged in' \
+    stats_page "${jar}"
+buckets=$(failure_buckets "${TEL_CTR}")
+assert_eq '' "${buckets}" "the login clears that client's failures"
+# A session id an attacker planted before the login is not the one logged in
+fixation=fixation0123456789abcdefghijklmn
+printf '127.0.0.1\tFALSE\t/\tFALSE\t0\tPHPSESSID\t%s\n' "${fixation}" >"${WORK}/jar-fixed"
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${WORK}/jar-fixed"
+assert_eq 303 "${STATUS}" 'the right password, with a session id chosen beforehand'
+assert_lacks 'value="Logout"' 'the session id chosen beforehand is not logged in' \
+    curl -s --max-time 10 -H "Cookie: PHPSESSID=${fixation}" "${STATS_URL}"
+
+# Caddy keeps the login's handle blocks ahead of stats.php's own only by
+# their order in site.caddy. A GET with op=login reaches login.php, which
+# sends it to the page; upstream would answer it with its form.
+for path in '/results/stats.php?op=login' '/results/stats.php?op=x&op=login' '/results/stats.php?op=login&op=x'; do
+    result=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "${TEL_BASE}${path}")
+    assert_eq "303 ${STATS_URL}" "${result}" "GET ${path} reaches login.php"
+done
+# Upstream's own check compares a login with stats_password, random and new
+# on every start. Even sent that very value, by any way of writing a login,
+# it decides nothing: every POST is login.php's, whose 403 and 429 upstream
+# never sends, and nobody is logged in.
+secret=$(telemetry_settings "${TEL_CTR}" | jq -r '.stats_password // empty' 2>/dev/null)
+if [[ "${secret}" =~ ^[0-9a-f]{64}$ ]]; then
+    i=0
+    for path in "${STATS_PATHS[@]}"; do
+        i=$(( i + 1 ))
+        stats_login "${TEL_BASE}${path}" "${secret}" "${WORK}/jar-secret-${i}"
+        case "${STATUS}" in
+            403 | 429) pass "POST ${path} with upstream's stats_password reaches login.php (${STATUS})" ;;
+            *) fail "POST ${path} with upstream's stats_password: expected login.php's 403 or 429, got ${STATUS}" ;;
+        esac
+        assert_lacks 'value="Logout"' "POST ${path} with upstream's stats_password logs nobody in" \
+            stats_page "${WORK}/jar-secret-${i}"
+    done
+else
+    fail "upstream's stats_password: expected 64 hex digits, got '${secret}'"
+fi
+probe "${TEL_CTR}" age-failures 901
+
+# Written on every start: a new password replaces the old at once. bcrypt
+# alone would also take the new one with anything after its 72nd byte.
+printf -v long '%072d' 0
+start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${long}"
+jar="${WORK}/jar-14-restart"
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq 403 "${STATUS}" 'after a restart with a new STATS_PASSWORD of 72 bytes: the old one'
+stats_login "${STATS_URL}?op=login" "${long}x" "${jar}"
+assert_eq 403 "${STATUS}" 'after a restart with a new STATS_PASSWORD of 72 bytes: the new one and a byte more'
+stats_login "${STATS_URL}?op=login" "${long}" "${jar}"
+assert_eq 303 "${STATUS}" 'after a restart with a new STATS_PASSWORD of 72 bytes: the new one'
+
+echo '== 15. five failures lock a client out for 900 s, and no header makes a new client'
+start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}"
+assert_lacks 'trusted_proxies' 'TRUSTED_PROXIES unset: global.caddy trusts no proxy' \
+    generated_file "${TEL_CTR}" caddy/global.caddy
+options=$(client_ip_options "${TEL_CTR}")
+assert_eq '[{"trusted_proxies":null,"trusted_proxies_strict":null,"client_ip_headers":null}]' "${options}" \
+    'TRUSTED_PROXIES unset: the server trusts no proxy'
+# Every header a client might hope the key comes from: X-Forwarded-For, the
+# server variable's own name, and the header PHP would map onto that name
+jar="${WORK}/jar-15"
+for i in 1 2 3 4 5; do
+    stats_login "${STATS_URL}?op=login" "wrong-${i}" "${jar}" -H "X-Forwarded-For: 203.0.113.${i}" \
+        -H "LIBRESPEED_CLIENT_IP: 198.51.100.${i}" -H "Librespeed-Client-Ip: 198.51.100.${i}"
+    assert_eq 403 "${STATUS}" "wrong password ${i} of 5, as 203.0.113.${i} and 198.51.100.${i}"
+done
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}" -H 'X-Forwarded-For: 203.0.113.6' \
+    -H 'LIBRESPEED_CLIENT_IP: 198.51.100.6' -H 'Librespeed-Client-Ip: 198.51.100.6' \
+    -H 'X-Real-IP: 198.51.100.7' -H 'Client-Ip: 198.51.100.8'
+assert_eq 429 "${STATUS}" 'the right password after five failures, under new addresses in every header'
+if [[ "${RETRY_AFTER}" =~ ^[0-9]+$ ]] && (( RETRY_AFTER >= 1 && RETRY_AFTER <= 900 )); then
+    pass "429 says when to try again (Retry-After: ${RETRY_AFTER})"
+else
+    fail "429 says when to try again: expected Retry-After of 1 to 900 seconds, got '${RETRY_AFTER}'"
+fi
+buckets=$(failure_buckets "${TEL_CTR}")
+if [[ "${buckets}" =~ ^([0-9a-f.:]+)=5$ && "${BASH_REMATCH[1]}" != 203.0.113.* \
+        && "${BASH_REMATCH[1]}" != 198.51.100.* ]]; then
+    pass "one client, keyed on the connection's own address, with five failures (${buckets})"
+else
+    fail "one client, keyed on the connection's own address, with five failures: got '${buckets}'"
+fi
+stats_login "${STATS_URL}?op=login" wrong-6 "${jar}"
+assert_eq 429 "${STATUS}" 'a sixth wrong password'
+again=$(failure_buckets "${TEL_CTR}")
+if [[ "${buckets}" =~ =5$ && "${again}" == "${buckets}" ]]; then
+    pass "a 429 records nothing (${again})"
+else
+    fail "a 429 records nothing: expected '${buckets}' with five failures, got '${again}'"
+fi
+# The failures are on /data, so a restart forgives none of them
+start_served "${TEL_CTR}" -v "${STATS_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}"
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq 429 "${STATUS}" 'after a restart: the right password'
+probe "${TEL_CTR}" age-failures 901
+stats_login "${STATS_URL}?op=login" "${STATS_PASSWORD_VALUE}" "${jar}"
+assert_eq 303 "${STATUS}" 'after age-failures 901: the right password'
+# Guesses sent all at once count as strictly as guesses sent in turn: each
+# is recorded before its password is checked
+for i in {1..10}; do
+    curl -s -o /dev/null -w '%{http_code}\n' --max-time 30 --data-urlencode "password=parallel-${i}" \
+        "${STATS_URL}?op=login" >"${WORK}/parallel-${i}" &
+done
+wait
+statuses=$(sort "${WORK}"/parallel-* | tr '\n' ' ')
+assert_eq '403 403 403 403 403 429 429 429 429 429 ' "${statuses}" 'ten wrong passwords at once'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+
+echo '== 16. behind a trusted proxy, the key is the right-most address it does not trust'
+"${ENGINE}" network create --subnet "${PROXY_SUBNET}" "${PROXY_NET}" >/dev/null
+"${ENGINE}" volume create "${PROXIED_VOL}" >/dev/null
+"${ENGINE}" run -d --name "${PROXIED_CTR}" "${CONFINE[@]}" --network "${PROXY_NET}" --ip "${PROXIED_IP}" \
+    -v "${PROXIED_VOL}:/data" -e TELEMETRY=true -e "STATS_PASSWORD=${STATS_PASSWORD_VALUE}" \
+    -e "TRUSTED_PROXIES=${PROXY_SUBNET}" "${IMAGE}" >/dev/null
+# The proxy is the image under test as well, so the suite needs no other
+"${ENGINE}" run -d --name "${PROXY_CTR}" "${CONFINE[@]}" --network "${PROXY_NET}" --ip "${PROXY_IP}" \
+    "${IMAGE}" >/dev/null
+install_probe "${PROXY_CTR}"
+deadline=$(( SECONDS + WAIT_FOR_PORT_SECONDS ))
+while proxy_request GET / '' '' && [[ "${PROXY_STATUS}" != 200 ]]; do
+    running=$("${ENGINE}" inspect --format '{{.State.Running}}' "${PROXIED_CTR}" 2>&1)
+    if [[ "${running}" != true ]] || (( SECONDS >= deadline )); then
+        fail "${PROXIED_CTR} never served its proxy: ${PROXY_STATUS}"
+        "${ENGINE}" logs "${PROXIED_CTR}" 2>&1 | sed 's/^/       | /' >&2
+        break
+    fi
+    sleep 1
+done
+assert_contains "trusted_proxies static ${PROXY_SUBNET}" "global.caddy trusts ${PROXY_SUBNET}" \
+    generated_file "${PROXIED_CTR}" caddy/global.caddy
+options=$(client_ip_options "${PROXIED_CTR}")
+assert_eq "[{\"trusted_proxies\":{\"ranges\":[\"${PROXY_SUBNET}\"],\"source\":\"static\"},\"trusted_proxies_strict\":1,\"client_ip_headers\":[\"X-Forwarded-For\"]}]" \
+    "${options}" 'the server trusts X-Forwarded-For from the proxy, read right to left'
+for i in 1 2 3 4 5; do
+    proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.7' "password=wrong-${i}"
+    assert_eq 403 "${PROXY_STATUS}" "client A, 203.0.113.7: wrong password ${i} of 5"
+done
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.7' "password=${STATS_PASSWORD_VALUE}"
+assert_eq 429 "${PROXY_STATUS}" 'client A: the right password after five failures'
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 2001:db8::1' "password=${STATS_PASSWORD_VALUE}"
+assert_eq 303 "${PROXY_STATUS}" 'client B, 2001:db8::1, through the same proxy: the right password'
+# The proxy appends the address it saw. Whatever the client wrote before it
+# is the client's own claim.
+proxy_request POST '/results/stats.php?op=login' 'X-Forwarded-For: 203.0.113.7, 198.51.100.9' \
+    "password=${STATS_PASSWORD_VALUE}"
+assert_eq 303 "${PROXY_STATUS}" "client A's address claimed in front of 198.51.100.9: the right password"
+buckets=$(failure_buckets "${PROXIED_CTR}")
+assert_eq '203.0.113.7=5' "${buckets}" "the failures are client A's alone"
+"${ENGINE}" rm -f "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1
+"${ENGINE}" network rm -f "${PROXY_NET}" >/dev/null 2>&1
+# Only addresses and CIDR ranges, whatever else is set, and nothing else
+# reaches the Caddyfile
+assert_refused 'TRUSTED_PROXIES=not-a-cidr' \
+    "TRUSTED_PROXIES holds 'not-a-cidr', which is not an IP address or CIDR range" -e TRUSTED_PROXIES=not-a-cidr
+assert_refused 'TRUSTED_PROXIES with a /33' \
+    "TRUSTED_PROXIES holds '10.0.0.0/33', which is not an IP address or CIDR range" \
+    -e 'TRUSTED_PROXIES=10.0.0.0/8 10.0.0.0/33'
+assert_refused 'TRUSTED_PROXIES that would close the servers block' \
+    "TRUSTED_PROXIES holds '}', which is not an IP address or CIDR range" \
+    -e $'TRUSTED_PROXIES=10.0.0.0/8 }\nadmin 0.0.0.0:2019'
+assert_refused "TRUSTED_PROXIES with Caddy's own private_ranges" \
+    "TRUSTED_PROXIES holds 'private_ranges', which is not an IP address or CIDR range" \
+    -e TRUSTED_PROXIES=private_ranges
+# What global.caddy holds is each address as PHP writes it, never the
+# variable's own text
+start_served "${TEL_CTR}" -e 'TRUSTED_PROXIES= 10.89.77.0/24,,2001:DB8::/32  192.0.2.1 '
+line=$(generated_file "${TEL_CTR}" caddy/global.caddy | grep 'trusted_proxies static')
+assert_eq $'\ttrusted_proxies static 10.89.77.0/24 2001:db8::/32 192.0.2.1' "${line}" \
+    'a list with commas, spaces and capitals, as written to global.caddy'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo
 if (( FAILURES == 0 )); then

@@ -47,7 +47,11 @@
 	# Written by the bootstrap on every start: the routes only some
 	# settings turn on. Each must be a handle block. Caddy sorts a bare
 	# directive, such as respond, after every handle here, and by then the
-	# catch-all below has answered 404.
+	# catch-all below has answered 404. Handle blocks whose paths are as
+	# long as each other keep the order they are written in, and the first
+	# that matches answers. So site.caddy writes the stats login's blocks,
+	# which match stats.php's own path, before stats.php's block, or
+	# upstream's form would never reach the login.
 	import /tmp/librespeed/caddy/site.caddy
 
 	handle {

@@ -160,6 +160,11 @@ RUN set -eux; \
     ln -s /tmp/librespeed/server-list.json "${out}/servers.json"; \
     ln -s /tmp/librespeed/telemetry_settings.php "${out}/results/telemetry_settings.php"; \
     ln -s /data/idObfuscation_salt.php "${out}/results/idObfuscation_salt.php"
+# The stats login is the image's own, not upstream's. It passes through here
+# only to get exact modes: COPY --chmod gives the directory it creates the
+# file's mode, 0644, and then no one can enter it.
+COPY rootfs/usr/local/share/librespeed-login/login.php /tmp/login.php
+RUN install -D -m 0644 /tmp/login.php /out/librespeed-login/login.php
 
 FROM ${RUNTIME_IMAGE}
 ARG LIBRESPEED_VERSION
@@ -167,6 +172,9 @@ ARG LIBRESPEED_VERSION
 COPY --from=frankenphp-build --chmod=0755 /go/src/app/dist/frankenphp /usr/local/bin/frankenphp
 COPY --from=fetch --chown=root:root /out/librespeed /var/www/librespeed
 COPY --from=fetch --chown=root:root /out/librespeed-templates /usr/local/share/librespeed-templates
+# The stats login, outside the served tree. Caddy runs it only through the
+# rewrite site.caddy holds when STATS_PASSWORD is set.
+COPY --from=fetch --chown=root:root /out/librespeed-login /usr/local/share/librespeed-login
 COPY --chown=root:root caddy/Caddyfile /etc/frankenphp/Caddyfile
 # The binary scans /etc/frankenphp/php.d, so this applies to the server and to
 # every php-cli run alike

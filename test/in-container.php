@@ -13,8 +13,8 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini, probe-getip, read-salt and read-row are the exceptions: they print
- * what they read and assert nothing.
+ * php-ini, probe-getip, read-salt, read-row and http-request are the
+ * exceptions: they print what they read and assert nothing.
  */
 
 /**
@@ -35,6 +35,11 @@ const TELEMETRY_DB = '/data/telemetry.db';
 const SALT_FILE = '/data/idObfuscation_salt.php';
 // The first bytes of every SQLite database file
 const SQLITE_MAGIC = "SQLite format 3\0";
+// Where login.php records failed logins
+const STATS_LOGIN_DB = '/data/stats-login.db';
+const HTTP_TIMEOUT = 10;
+// An HTTP field name is a token: RFC 9110, section 5.6.2
+const HEADER_LINE = '/\A[!#$%&\'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\z/';
 
 /**
  * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
@@ -389,6 +394,97 @@ function readRow(string $id): void
     fwrite(STDOUT, json_encode($row, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
 }
 
+/**
+ * Moves every failed login login.php has recorded the given number of
+ * seconds into the past, so its window can be tested without waiting it
+ * out. Moving none fails: a test that ages failures expects some.
+ */
+function ageFailures(string $seconds): void
+{
+    if (preg_match('/^[1-9][0-9]*$/', $seconds) !== 1) {
+        throw new InvalidArgumentException("'$seconds' is not a number of seconds");
+    }
+    if (!is_file(STATS_LOGIN_DB)) {
+        throw new RuntimeException(STATS_LOGIN_DB . ' does not exist');
+    }
+
+    $pdo = new PDO('sqlite:' . STATS_LOGIN_DB, null, null, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => HTTP_TIMEOUT,
+    ]);
+    $statement = $pdo->prepare('UPDATE failures SET at = at - ?');
+    $statement->execute([(int) $seconds]);
+    $moved = $statement->rowCount();
+
+    Assertions::record(
+        $moved > 0,
+        "the recorded login failures, moved $seconds s into the past",
+        'at least one',
+        (string) $moved,
+    );
+}
+
+/**
+ * Sends one request over a bare socket, as a proxy in front of the server
+ * would, and prints the status code on the first line and the body after
+ * it. headers holds one "Name: value" per line. A body goes form-encoded,
+ * as upstream's login form posts it. HTTP/1.0 keeps the answer unchunked,
+ * ending where the server closes the connection.
+ */
+function httpRequest(string $method, string $url, string $headers, string $body): void
+{
+    if (preg_match('/\A[A-Z]+\z/', $method) !== 1) {
+        throw new InvalidArgumentException("'$method' is not a method");
+    }
+    $parts = parse_url($url);
+    if ($parts === false || ($parts['scheme'] ?? '') !== 'http' || !isset($parts['host'])) {
+        throw new InvalidArgumentException("'$url' is not an http:// URL");
+    }
+    $host = $parts['host'];
+    $port = $parts['port'] ?? 80;
+    $target = ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+
+    $lines = ["$method $target HTTP/1.0", "Host: $host:$port", 'Connection: close'];
+    foreach (explode("\n", $headers) as $header) {
+        if ($header === '') {
+            continue;
+        }
+        if (preg_match(HEADER_LINE, $header) !== 1) {
+            throw new InvalidArgumentException("'$header' is not a header line");
+        }
+        $lines[] = $header;
+    }
+    if ($body !== '') {
+        $lines[] = 'Content-Type: application/x-www-form-urlencoded';
+    }
+    if ($body !== '' || $method === 'POST') {
+        $lines[] = 'Content-Length: ' . strlen($body);
+    }
+    $request = implode("\r\n", $lines) . "\r\n\r\n" . $body;
+
+    $errno = 0;
+    $errstr = '';
+    $socket = @fsockopen($host, $port, $errno, $errstr, HTTP_TIMEOUT);
+    if ($socket === false) {
+        throw new RuntimeException(sprintf('cannot connect to %s:%d (errno %d: %s)', $host, $port, $errno, $errstr));
+    }
+    stream_set_timeout($socket, HTTP_TIMEOUT);
+    $sent = fwrite($socket, $request);
+    $response = stream_get_contents($socket);
+    fclose($socket);
+
+    if ($sent !== strlen($request) || $response === false) {
+        throw new RuntimeException("the exchange with $host:$port broke off");
+    }
+
+    $split = explode("\r\n\r\n", $response, 2);
+    if (preg_match('#\AHTTP/\d\.\d (\d{3})#', $split[0], $status) !== 1) {
+        throw new RuntimeException('no HTTP status line in the answer: ' . substr($split[0], 0, 80));
+    }
+
+    fwrite(STDOUT, $status[1] . "\n" . ($split[1] ?? ''));
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -408,6 +504,11 @@ function commands(): array
         'remove-db' => ['arguments' => [], 'handler' => removeDb(...)],
         'read-salt' => ['arguments' => [], 'handler' => readSalt(...)],
         'read-row' => ['arguments' => ['id'], 'handler' => readRow(...)],
+        'age-failures' => ['arguments' => ['seconds'], 'handler' => ageFailures(...)],
+        'http-request' => [
+            'arguments' => ['method', 'url', 'headers', 'body'],
+            'handler' => httpRequest(...),
+        ],
     ];
 }
 

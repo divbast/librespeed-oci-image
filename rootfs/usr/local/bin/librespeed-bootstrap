@@ -21,6 +21,11 @@ const TEMPLATES_DIR = '/usr/local/share/librespeed-templates';
 const DATA_DIR = '/data';
 const TELEMETRY_DB = DATA_DIR . '/telemetry.db';
 const SALT_FILE = DATA_DIR . '/idObfuscation_salt.php';
+// The stats login's: STATS_PASSWORD's hash, and the failures it counts
+const STATS_PASSWORD_HASH = DATA_DIR . '/stats-password.hash';
+const STATS_LOGIN_DB = DATA_DIR . '/stats-login.db';
+// bcrypt, which PASSWORD_DEFAULT is, reads no more of a password than this
+const BCRYPT_MAX_BYTES = 72;
 
 // index-modern.html's own text, found and replaced as upstream's entrypoint
 // does. test/upstream-layout.sh fails the build on a release that drops one.
@@ -212,13 +217,80 @@ function ensureSalt(): void {
 }
 
 /**
+ * One entry of TRUSTED_PROXIES as PHP writes the address, with its prefix
+ * length if it has one, or null if it is neither an address nor a CIDR
+ * range. Caddy's own shorthands, such as private_ranges, are not taken.
+ */
+function proxyRange(string $entry): ?string {
+    if (preg_match('#\A([0-9A-Fa-f:.]+)(?:/(0|[1-9][0-9]{0,2}))?\z#', $entry, $parts) !== 1
+        || filter_var($parts[1], FILTER_VALIDATE_IP) === false) {
+        return null;
+    }
+    $packed = inet_pton($parts[1]);
+    $address = $packed === false ? false : inet_ntop($packed);
+    if ($packed === false || $address === false) {
+        return null;
+    }
+    if (!isset($parts[2])) {
+        return $address;
+    }
+
+    return (int) $parts[2] <= strlen($packed) * 8 ? "$address/{$parts[2]}" : null;
+}
+
+/**
+ * TRUSTED_PROXIES, separated by commas or white space, as the addresses and
+ * CIDR ranges it names. Anything else stops the start, so global.caddy only
+ * ever holds addresses PHP itself wrote, never the variable's own text.
+ *
+ * @return list<string>
+ */
+function validateProxies(string $raw): array {
+    $proxies = [];
+    foreach (preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $entry) {
+        $proxies[] = proxyRange($entry)
+            ?? fail("TRUSTED_PROXIES holds '$entry', which is not an IP address or CIDR range");
+    }
+    if ($proxies === []) {
+        fail('TRUSTED_PROXIES is set, but names no address');
+    }
+
+    return $proxies;
+}
+
+/**
+ * Caddy's global options. With proxies, a connection from one of them has
+ * {client_ip} read from X-Forwarded-For, right to left, skipping every
+ * address they name: the last address no trusted proxy wrote, and not
+ * whatever the client wrote in front of it. The stats login's limit reads
+ * {client_ip}, and the access log records it as client_ip. REMOTE_ADDR,
+ * which upstream's scripts read, stays the connection's own.
+ *
+ * @param list<string> $proxies
+ */
+function writeGlobalSnippet(array $proxies): void {
+    if ($proxies === []) {
+        writeGenerated('caddy/global.caddy', "# librespeed-bootstrap: TRUSTED_PROXIES is unset, so no global options\n");
+
+        return;
+    }
+
+    writeGenerated('caddy/global.caddy', "# librespeed-bootstrap: TRUSTED_PROXIES\n"
+        . "servers {\n"
+        . "\ttrusted_proxies static " . implode(' ', $proxies) . "\n"
+        . "\ttrusted_proxies_strict\n"
+        . "\tclient_ip_headers X-Forwarded-For\n"
+        . "}\n");
+}
+
+/**
  * The :8080 routes only some settings turn on. Caddy sorts a bare
  * directive after the Caddyfile's handle blocks, where the catch-all has
  * already answered 404, so every route here is a handle block of its own.
  */
 function writeSiteSnippet(bool $telemetry, bool $stats): void {
-    if ($stats) {
-        fail('this image has no stats routes yet');
+    if ($stats && !$telemetry) {
+        fail('the stats page has no results to show with telemetry off');
     }
     if (!$telemetry) {
         writeGenerated('caddy/site.caddy', "# librespeed-bootstrap: telemetry is off, so no optional routes\n");
@@ -226,7 +298,7 @@ function writeSiteSnippet(bool $telemetry, bool $stats): void {
         return;
     }
 
-    writeGenerated('caddy/site.caddy', <<<'CADDY'
+    $snippet = <<<'CADDY'
         # librespeed-bootstrap: telemetry is on
         # Records a result, and shows one as JSON and as the share image
         @telemetry path /results/telemetry.php /results/json.php /results/index.php
@@ -239,7 +311,65 @@ function writeSiteSnippet(bool $telemetry, bool $stats): void {
         	php
         }
 
-        CADDY);
+        CADDY;
+    if (!$stats) {
+        writeGenerated('caddy/site.caddy', $snippet . "# STATS_PASSWORD is unset, so stats.php has no route\n");
+
+        return;
+    }
+
+    // Both ways into the login: login.php, from its own root outside the
+    // served tree, told the address its limit counts failures against
+    $login = <<<'CADDY'
+        {
+        	root * /usr/local/share/librespeed-login
+        	rewrite * /login.php
+        	php {
+        		env LIBRESPEED_CLIENT_IP {client_ip}
+        	}
+        }
+        CADDY;
+    writeGenerated('caddy/site.caddy', $snippet . sprintf(<<<'CADDY'
+        # STATS_PASSWORD is set: stats.php, behind the image's own login.
+        # Caddy keeps handle blocks whose paths are as long as each other in
+        # the order they are written, and the first that matches answers. The
+        # login's two blocks match stats.php's own path, so they come first,
+        # or no login would ever reach login.php.
+        # Upstream's form posts to stats.php?op=login.
+        @statslogin {
+        	path /results/stats.php
+        	query op=login
+        }
+        handle @statslogin %1$s
+        # And every POST, however its query is written. PHP fills $_POST for
+        # no other method, so stats.php never sees a password, and its own
+        # check against $stats_password decides nothing.
+        @statspost {
+        	path /results/stats.php
+        	method POST
+        }
+        handle @statspost %1$s
+        handle /results/stats.php {
+        	php
+        }
+
+        CADDY, $login));
+}
+
+/**
+ * STATS_PASSWORD as login.php checks it: a hash, readable by this uid
+ * alone, and written on every start, so a changed password takes effect at
+ * once.
+ */
+function writeStatsHash(string $password): void {
+    $staging = STATS_PASSWORD_HASH . '.new';
+    if (!@touch($staging)
+        || !@chmod($staging, 0o600)
+        || @file_put_contents($staging, password_hash($password, PASSWORD_DEFAULT)) === false
+        || !@rename($staging, STATS_PASSWORD_HASH)) {
+        @unlink($staging);
+        fail('cannot write ' . STATS_PASSWORD_HASH);
+    }
 }
 
 // Every variable is read and checked before anything is written
@@ -249,6 +379,15 @@ $obfuscateIds = envBool('ENABLE_ID_OBFUSCATION', false);
 $title = envString('TITLE');
 $tagline = envString('TAGLINE');
 $email = envString('GDPR_EMAIL');
+$statsPassword = envString('STATS_PASSWORD');
+if ($statsPassword !== null && strlen($statsPassword) > BCRYPT_MAX_BYTES) {
+    fail('STATS_PASSWORD is ' . strlen($statsPassword) . ' bytes long, but bcrypt reads only the first '
+        . BCRYPT_MAX_BYTES . ', and would take any password that starts the same way');
+}
+$trustedProxies = envString('TRUSTED_PROXIES');
+$proxies = $trustedProxies === null ? [] : validateProxies($trustedProxies);
+// The stats page shows recorded results, so it needs telemetry as well
+$stats = $telemetry && $statsPassword !== null;
 
 if ($telemetry) {
     requireWritableData();
@@ -256,11 +395,15 @@ if ($telemetry) {
     if ($obfuscateIds) {
         requireUsable(SALT_FILE, false);
     }
+    if ($stats) {
+        requireUsable(STATS_LOGIN_DB, true);
+    }
 } else {
     $ignored = array_keys(array_filter(
         [
             'REDACT_IP_ADDRESSES' => envString('REDACT_IP_ADDRESSES'),
             'ENABLE_ID_OBFUSCATION' => envString('ENABLE_ID_OBFUSCATION'),
+            'STATS_PASSWORD' => $statsPassword,
         ],
         static fn (?string $value): bool => $value !== null,
     ));
@@ -324,17 +467,28 @@ if ($telemetry) {
         ensureSalt();
     }
     info('telemetry is on: results are recorded in ' . TELEMETRY_DB);
+    if ($statsPassword !== null) {
+        writeStatsHash($statsPassword);
+        info('stats are on: /results/stats.php asks for STATS_PASSWORD');
+    }
 } elseif (file_exists(GENERATED_DIR . '/telemetry_settings.php')
     && !@unlink(GENERATED_DIR . '/telemetry_settings.php')) {
     fail('cannot remove ' . GENERATED_DIR . '/telemetry_settings.php');
 }
 // The Caddyfile imports both snippets unconditionally, so each must exist
 // even when it has nothing to say.
-writeGenerated('caddy/global.caddy', "# librespeed-bootstrap: no global options\n");
-writeSiteSnippet($telemetry, false);
+writeGlobalSnippet($proxies);
+if ($proxies !== []) {
+    info('X-Forwarded-For from ' . implode(', ', $proxies) . ' names the client, for the stats login and the access log');
+}
+writeSiteSnippet($telemetry, $stats);
 
 info('ready');
 
-// Replace this process with the server
-pcntl_exec(SERVER_BIN, ['run', '--config', CADDYFILE]);
+// Replace this process with the server. It needs only the hash, so it
+// starts without the password itself: no PHP it runs can read it back,
+// through getenv() or from /proc/1/environ.
+$serverEnv = getenv();
+unset($serverEnv['STATS_PASSWORD']);
+pcntl_exec(SERVER_BIN, ['run', '--config', CADDYFILE], $serverEnv);
 fail('pcntl_exec failed to start ' . SERVER_BIN);

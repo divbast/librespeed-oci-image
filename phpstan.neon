@@ -9,4 +9,5 @@ parameters:
     phpVersion: 80500
     paths:
         - rootfs/usr/local/bin/librespeed-bootstrap
+        - rootfs/usr/local/share/librespeed-login/login.php
         - test/in-container.php
