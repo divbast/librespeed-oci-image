@@ -64,8 +64,18 @@
 	}
 }
 
-# Internal health listener, meant to stay unpublished. It has nothing to
-# answer yet.
+# Internal health listener, meant to stay unpublished: /healthz, and a 404
+# for everything else. Its root is outside the served tree, and the rewrite
+# names the one script it runs. It deliberately carries no log block:
+# HEALTHCHECK asks for /healthz every 30 s, and those thousands of access-log
+# lines a day would bury :8080's, which are the ones worth reading.
 :8081 {
-	respond 404
+	root /usr/local/share/librespeed-health
+	handle /healthz {
+		rewrite * /index.php
+		php
+	}
+	handle {
+		respond 404
+	}
 }

@@ -39,6 +39,11 @@ PROXIED_IP=10.89.77.10
 PROXIED_VOL=librespeed-acc-proxied
 PROXY_CTR=librespeed-acc-proxy
 PROXY_IP=10.89.77.20
+# Sections 17 to 19 use TEL_CTR and TEL_PORT too, and publish the health
+# listener, which a deployment keeps unpublished, only to test it
+HEALTH_PORT=18193
+HEALTH_BASE="http://127.0.0.1:${HEALTH_PORT}"
+HEALTH_VOL=librespeed-acc-health
 
 # The size the README states. Every container here gets exactly this, so no
 # check passes on more room than the contract grants.
@@ -57,6 +62,20 @@ GETIP_LOOPBACK='{"processedString":"127.0.0.1","rawIspInfo":""}'
 # The table upstream's getPdo() makes, as results_table prints it, before
 # any result is recorded
 EMPTY_RESULTS_TABLE='{"columns":["id","ispinfo","extra","timestamp","ip","ua","lang","dl","ul","ping","jitter","log"],"rows":0}'
+
+# The shipped health probe, and what HEALTHCHECK runs, as its exec form
+HEALTH_PROBE=/usr/local/bin/librespeed-health
+HEALTH_CMD='["/usr/local/bin/frankenphp","php-cli","/usr/local/bin/librespeed-health"]'
+# Podman reads no HEALTHCHECK from an image published as an OCI index, so
+# its users pass the same array as --health-cmd, and under Podman so does
+# this suite. No leading "CMD": before 5.8.0, Podman re-splits an array
+# that starts with it on white space, and never runs the probe.
+HEALTH_ARGS=()
+if [[ "${ENGINE}" == podman ]]; then
+    HEALTH_ARGS=(--health-cmd "${HEALTH_CMD}")
+fi
+# Read from the image's HEALTHCHECK in section 17, under Docker
+HEALTH_START_PERIOD=0
 
 # The speed test's upload: speedtest_worker.js posts blobs of
 # xhr_ul_blob_megabytes, 20 by default, each of 1048576 bytes
@@ -535,12 +554,80 @@ results_table() {
             "rows" => (int) db()->query("SELECT COUNT(*) FROM speedtest_users")->fetchColumn()]), "\n";'
 }
 
+# GET /healthz on the published health listener. Sets HEALTHZ_STATUS, and
+# HEALTHZ_BODY without its final newline.
+healthz() {
+    local out
+    out=$(curl -s --max-time 10 -w '\n%{http_code}' "${HEALTH_BASE}/healthz")
+    HEALTHZ_STATUS=${out##*$'\n'}
+    HEALTHZ_BODY=${out%$'\n'*}
+    HEALTHZ_BODY=${HEALTHZ_BODY%$'\n'}
+}
+
+# The shipped probe, run in a container as HEALTHCHECK runs it. Sets
+# HEALTH_RC, and HEALTH_OUT to everything it printed.
+run_health_probe() {
+    HEALTH_OUT=$("${ENGINE}" exec "${1}" "${PHP_BIN}" php-cli "${HEALTH_PROBE}" 2>&1)
+    HEALTH_RC=$?
+}
+
+# The engine's own verdict, which it reaches by running the health check
+# itself: Docker runs the image's HEALTHCHECK, Podman the --health-cmd it
+# was given. A shell-form command needs /bin/sh, which the image lacks, so
+# only the exec form can pass. Docker must say healthy within the start
+# period of the time given; Podman runs one check when asked.
+assert_engine_healthy() {
+    local ctr="${1}" started="${2}" what="${3}" status out rc deadline
+    if [[ "${ENGINE}" == podman ]]; then
+        out=$("${ENGINE}" healthcheck run "${ctr}" 2>&1)
+        rc=$?
+        assert_eq 0 "${rc}" "${what}: podman healthcheck run"
+        (( rc == 0 )) || printf '       | %s\n' "${out}" >&2
+        return
+    fi
+    deadline=$(( started + HEALTH_START_PERIOD ))
+    while :; do
+        status=$("${ENGINE}" inspect --format \
+            '{{if .State.Health}}{{.State.Health.Status}}{{else}}no health check{{end}}' "${ctr}" 2>&1)
+        if [[ "${status}" == healthy || "${status}" == unhealthy ]] || (( SECONDS >= deadline )); then
+            break
+        fi
+        sleep 1
+    done
+    assert_eq healthy "${status}" "${what}: ${ENGINE} reports it healthy within the ${HEALTH_START_PERIOD} s start period"
+    if [[ "${status}" != healthy ]]; then
+        "${ENGINE}" inspect --format '{{if .State.Health}}{{json .State.Health.Log}}{{end}}' "${ctr}" 2>&1 \
+            | sed 's/^/       | /' >&2
+    fi
+}
+
+# /healthz is 503 and names the failed check on a line of its own, and the
+# probe exits 1, naming the /healthz half and that check. The getIP.php
+# half, still sound, goes unnamed.
+assert_health_fails() {
+    local what="${1}" check="${2}"
+    healthz
+    assert_eq 503 "${HEALTHZ_STATUS}" "${what}: GET :8081/healthz"
+    if [[ $'\n'"${HEALTHZ_BODY}" == *$'\n'"${check}:"* ]]; then
+        pass "${what}: /healthz names ${check} (${HEALTHZ_BODY//$'\n'/ | })"
+    else
+        fail "${what}: /healthz names ${check}: got '${HEALTHZ_BODY//$'\n'/ | }'"
+    fi
+    run_health_probe "${TEL_CTR}"
+    assert_eq 1 "${HEALTH_RC}" "${what}: ${HEALTH_PROBE} exits 1"
+    if [[ "${HEALTH_OUT}" == *'http://127.0.0.1:8081/healthz'*"${check}:"* && "${HEALTH_OUT}" != *getIP.php* ]]; then
+        pass "${what}: the probe names the /healthz half and ${check}, and only that half"
+    else
+        fail "${what}: the probe names the /healthz half and ${check}, and only that half: got '${HEALTH_OUT}'"
+    fi
+}
+
 cleanup() {
     "${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${TEL_CTR}" \
         "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
     "${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" "${PROXY_NET}" >/dev/null 2>&1 || true
     "${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" "${STATS_VOL}" \
-        "${PROXIED_VOL}" >/dev/null 2>&1 || true
+        "${PROXIED_VOL}" "${HEALTH_VOL}" >/dev/null 2>&1 || true
 }
 trap 'cleanup; rm -rf "${WORK}"' EXIT
 cleanup
@@ -1331,6 +1418,74 @@ start_served "${TEL_CTR}" -e 'TRUSTED_PROXIES= 10.89.77.0/24,,2001:DB8::/32  192
 line=$(generated_file "${TEL_CTR}" caddy/global.caddy | grep 'trusted_proxies static')
 assert_eq $'\ttrusted_proxies static 10.89.77.0/24 2001:db8::/32 192.0.2.1' "${line}" \
     'a list with commas, spaces and capitals, as written to global.caddy'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+
+echo '== 17. healthy: /healthz is 200 ok with telemetry off and on, and the engine runs the probe'
+if [[ "${ENGINE}" != podman ]]; then
+    # Podman builds and runs without it; Docker runs exactly this
+    healthcheck=$("${ENGINE}" image inspect --format '{{json .Config.Healthcheck}}' "${IMAGE}" 2>&1)
+    timings=$(jq -c '{Test, Interval, Timeout, StartPeriod, Retries}' 2>&1 <<<"${healthcheck}")
+    assert_eq "{\"Test\":[\"CMD\",\"/usr/local/bin/frankenphp\",\"php-cli\",\"${HEALTH_PROBE}\"],\"Interval\":30000000000,\"Timeout\":10000000000,\"StartPeriod\":60000000000,\"Retries\":3}" \
+        "${timings}" "the image's HEALTHCHECK: the probe in exec form, with no shell, at Baikal's timings"
+    HEALTH_START_PERIOD=$(jq -r '(.StartPeriod // 0) / 1000000000 | floor' 2>/dev/null <<<"${healthcheck}")
+    [[ "${HEALTH_START_PERIOD}" =~ ^[0-9]+$ ]] || HEALTH_START_PERIOD=0
+fi
+started=${SECONDS}
+start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081" "${HEALTH_ARGS[@]}"
+healthz
+assert_eq '200 ok' "${HEALTHZ_STATUS} ${HEALTHZ_BODY}" 'telemetry off: GET :8081/healthz'
+run_health_probe "${TEL_CTR}"
+assert_eq 0 "${HEALTH_RC}" "telemetry off: ${HEALTH_PROBE} exits 0"
+assert_eq '' "${HEALTH_OUT}" "telemetry off: ${HEALTH_PROBE} prints nothing"
+assert_engine_healthy "${TEL_CTR}" "${started}" 'telemetry off'
+# A fresh volume, and not one result posted: the database the check needs
+# is there from the start
+"${ENGINE}" volume create "${HEALTH_VOL}" >/dev/null
+started=${SECONDS}
+start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081" "${HEALTH_ARGS[@]}" -v "${HEALTH_VOL}:/data" -e TELEMETRY=true
+table=$(results_table "${TEL_CTR}")
+assert_eq "${EMPTY_RESULTS_TABLE}" "${table}" 'telemetry on, a fresh volume: no result has been recorded'
+healthz
+assert_eq '200 ok' "${HEALTHZ_STATUS} ${HEALTHZ_BODY}" 'telemetry on, a fresh volume: GET :8081/healthz'
+run_health_probe "${TEL_CTR}"
+assert_eq 0 "${HEALTH_RC}" "telemetry on, a fresh volume: ${HEALTH_PROBE} exits 0"
+(( HEALTH_RC == 0 )) || printf '       | %s\n' "${HEALTH_OUT}" >&2
+assert_engine_healthy "${TEL_CTR}" "${started}" 'telemetry on, a fresh volume'
+
+echo '== 18. failure modes: each names its check in a 503, and the probe exits 1'
+# The container from section 17, telemetry on. A database the server
+# cannot write would take results and record none of them.
+php_in "${TEL_CTR}" 'chmod("/data/telemetry.db", 0444);' >/dev/null
+assert_health_fails 'with /data/telemetry.db read-only' database
+php_in "${TEL_CTR}" 'chmod("/data/telemetry.db", 0644);' >/dev/null
+healthz
+assert_eq '200 ok' "${HEALTHZ_STATUS} ${HEALTHZ_BODY}" 'writable again: GET :8081/healthz'
+probe "${TEL_CTR}" damage-db
+assert_health_fails 'after damage-db' database
+probe "${TEL_CTR}" remove-db
+assert_health_fails 'after remove-db' database
+# The check only reads. Asked, twice over, it made no database, so a
+# missing one stays missing until upstream records a result.
+gone=$(php_in "${TEL_CTR}" 'echo file_exists("/data/telemetry.db") ? "present" : "absent";')
+assert_eq absent "${gone}" 'after remove-db and /healthz: /data/telemetry.db'
+# PHP settings added from a mounted directory, as an operator might add
+# them, reach the server too, and every one the image depends on fails the
+# ini check. The bootstrap makes the database again, so ini alone fails.
+php_on_volume "${HEALTH_VOL}" 'mkdir("/data/php.d"); file_put_contents("/data/php.d/zz-operator.ini",
+    "allow_url_fopen = On\ndisplay_errors = On\nlog_errors = Off\n");'
+start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081" "${HEALTH_ARGS[@]}" -v "${HEALTH_VOL}:/data" -e TELEMETRY=true \
+    -e PHP_INI_SCAN_DIR=:/data/php.d
+assert_health_fails 'with allow_url_fopen and display_errors on, and log_errors off' ini
+assert_eq 'ini: allow_url_fopen is on, display_errors is on, log_errors is off' "${HEALTHZ_BODY}" \
+    'the three settings, on one line, and no other check failed'
+"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
+
+echo '== 19. the health port serves nothing else, and :8080 has no /healthz'
+start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081"
+for path in / /backend/getIP.php /index.php; do
+    assert_status 404 "GET :8081${path}" "${HEALTH_BASE}${path}"
+done
+assert_status 404 'GET :8080/healthz' "${TEL_BASE}/healthz"
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo

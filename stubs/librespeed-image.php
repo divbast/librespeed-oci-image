@@ -10,8 +10,37 @@ declare(strict_types=1);
  * fetches and this repository never holds. Declarations only, for PHPStan
  * to scan: nothing here runs.
  *
- * rootfs/usr/local/bin/librespeed-bootstrap makes the database with getPdo().
+ * rootfs/usr/local/bin/librespeed-bootstrap makes the database with getPdo(),
+ * and rootfs/usr/local/share/librespeed-health/index.php opens the offline
+ * ISP database with MaxMind's reader, as getIP.php does.
  */
+
+namespace MaxMind\Db {
+    /**
+     * Only the members /healthz reaches, as backend/geoip2.phar ships them
+     * in LibreSpeed 6.3.1.
+     */
+    class Reader
+    {
+        /**
+         * Throws if the file cannot be read, or is not a MaxMind database.
+         */
+        public function __construct(string $database)
+        {
+        }
+
+        /**
+         * The record for an address, or null if the database holds none.
+         */
+        public function get(string $ipAddress): mixed
+        {
+        }
+
+        public function close(): void
+        {
+        }
+    }
+}
 
 namespace {
     /**

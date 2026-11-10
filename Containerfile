@@ -160,11 +160,14 @@ RUN set -eux; \
     ln -s /tmp/librespeed/server-list.json "${out}/servers.json"; \
     ln -s /tmp/librespeed/telemetry_settings.php "${out}/results/telemetry_settings.php"; \
     ln -s /data/idObfuscation_salt.php "${out}/results/idObfuscation_salt.php"
-# The stats login is the image's own, not upstream's. It passes through here
-# only to get exact modes: COPY --chmod gives the directory it creates the
-# file's mode, 0644, and then no one can enter it.
+# The stats login and the health endpoint are the image's own, not
+# upstream's. They pass through here only to get exact modes: COPY --chmod
+# gives the directory it creates the file's mode, 0644, and then no one can
+# enter it.
 COPY rootfs/usr/local/share/librespeed-login/login.php /tmp/login.php
-RUN install -D -m 0644 /tmp/login.php /out/librespeed-login/login.php
+COPY rootfs/usr/local/share/librespeed-health/index.php /tmp/health.php
+RUN install -D -m 0644 /tmp/login.php /out/librespeed-login/login.php \
+    && install -D -m 0644 /tmp/health.php /out/librespeed-health/index.php
 
 FROM ${RUNTIME_IMAGE}
 ARG LIBRESPEED_VERSION
@@ -175,6 +178,8 @@ COPY --from=fetch --chown=root:root /out/librespeed-templates /usr/local/share/l
 # The stats login, outside the served tree. Caddy runs it only through the
 # rewrite site.caddy holds when STATS_PASSWORD is set.
 COPY --from=fetch --chown=root:root /out/librespeed-login /usr/local/share/librespeed-login
+# /healthz, which the Caddyfile serves on :8081 alone
+COPY --from=fetch --chown=root:root /out/librespeed-health /usr/local/share/librespeed-health
 COPY --chown=root:root caddy/Caddyfile /etc/frankenphp/Caddyfile
 # The binary scans /etc/frankenphp/php.d, so this applies to the server and to
 # every php-cli run alike
@@ -185,6 +190,7 @@ ENV XDG_DATA_HOME=/tmp \
     XDG_CONFIG_HOME=/tmp
 
 COPY --chown=root:root --chmod=0755 rootfs/usr/local/bin/librespeed-bootstrap /usr/local/bin/librespeed-bootstrap
+COPY --chown=root:root --chmod=0755 rootfs/usr/local/bin/librespeed-health /usr/local/bin/librespeed-health
 
 LABEL org.opencontainers.image.source="https://github.com/divbast/librespeed-oci-image" \
     org.opencontainers.image.url="https://github.com/divbast/librespeed-oci-image" \
@@ -192,5 +198,15 @@ LABEL org.opencontainers.image.source="https://github.com/divbast/librespeed-oci
     org.opencontainers.image.version="${LIBRESPEED_VERSION}"
 
 EXPOSE 8080 8081
+# Exec form: the shell form would need /bin/sh, which the image lacks.
+# --timeout must clear librespeed-health's own budget: it allows each of its
+# two exchanges 4 s and runs them one after the other, so a listener that
+# accepts and never answers costs 8 s. A shorter timeout kills the probe
+# mid-flight and records a bare engine timeout instead of the probe's own
+# line, and with no shell and no access log on :8081 that line is the only
+# diagnostic there is. Podman reads no HEALTHCHECK from an image published
+# as an OCI index: its users pass the same array as --health-cmd.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["/usr/local/bin/frankenphp", "php-cli", "/usr/local/bin/librespeed-health"]
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/frankenphp", "php-cli", "/usr/local/bin/librespeed-bootstrap"]
