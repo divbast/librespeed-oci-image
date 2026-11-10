@@ -133,8 +133,11 @@ COPY test/upstream-layout.sh /tmp/upstream-layout.sh
 RUN /tmp/upstream-layout.sh /src
 # Only what is served, plus the licence. index-modern.html is a template the
 # bootstrap renders into /tmp/librespeed/index.html on every start, and is
-# never served itself. The symlinks dangle until then: everything that changes
-# per start lives on the /tmp tmpfs, and the obfuscation salt on /data.
+# never served itself. Nor is frontend/index.html, upstream's raw copy of
+# that page with its placeholders still in, or background-original.jpeg,
+# which nothing references. The symlinks dangle until the bootstrap runs:
+# everything that changes per start lives on the /tmp tmpfs, and the
+# obfuscation salt on /data.
 RUN set -eux; \
     out=/out/librespeed; \
     mkdir -p "${out}/backend" "${out}/results" /out/librespeed-templates /data; \
@@ -142,7 +145,8 @@ RUN set -eux; \
         /src/favicon.ico /src/manifest.webmanifest /src/LICENSE "${out}/"; \
     cp -R /src/images "${out}/images"; \
     cp -R /src/frontend "${out}/frontend"; \
-    rm -r "${out}/frontend/README.md" "${out}/frontend/screenshots"; \
+    rm -r "${out}/frontend/README.md" "${out}/frontend/screenshots" \
+        "${out}/frontend/index.html" "${out}/frontend/images/background-original.jpeg"; \
     cp /src/backend/empty.php /src/backend/garbage.php /src/backend/getIP.php \
         /src/backend/getIP_util.php /src/backend/getIP_ipInfo_apikey.php \
         /src/backend/geoip2.phar /src/backend/country_asn.mmdb "${out}/backend/"; \
