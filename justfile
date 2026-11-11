@@ -48,7 +48,7 @@ setup:
 
 # Every lint gate. Needs a running Docker daemon, for docker build --check
 lint:
-    {{ just_executable() }} actions-check workflow-audit actionlint shell-lint go-lint reuse-lint app-lint
+    {{ just_executable() }} actions-check workflow-audit actionlint shell-lint go-lint go-test reuse-lint app-lint
     vendor/bin/phpstan analyse --no-progress
     # The README's Env Vars table names exactly the variables the image reads
     ./test/env-docs.sh

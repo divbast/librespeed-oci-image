@@ -22,3 +22,7 @@
 # The toolchain is the one pinned above, never one go.mod's toolchain line
 # would download
 GOTOOLCHAIN = "local"
+# Composer's vendor/ sits at the module root, so with a require in go.mod Go
+# would take it for a Go vendor directory and refuse to build. readonly is
+# the default outside vendor mode, and still refuses to edit go.mod.
+GOFLAGS = "-mod=readonly"
