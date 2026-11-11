@@ -11,8 +11,15 @@ Published as `ghcr.io/divbast/librespeed`.
 
 ## Base
 
-This image runs [FrankenPHP](https://github.com/php/frankenphp): PHP 8.5 and Caddy
-in a single mostly-static binary on a Debian Trixie-based distroless base.
+This image runs [FrankenPHP](https://github.com/php/frankenphp): PHP 8.5 and
+Caddy in one binary, on a Debian Trixie-based distroless base. The binary is
+the one [divbast/frankenphp](https://github.com/divbast/frankenphp) builds
+for this image, `ghcr.io/divbast/frankenphp:librespeed`, with LibreSpeed's
+PHP extensions and from pinned sources. The Containerfile copies it in by
+digest, and CI builds nothing until it has checked that divbast/frankenphp's
+own build on its `main` attested that digest.
+[Verifying the image](#verifying-the-image) shows how to check the image,
+and the binary in it, yourself.
 
 ## Container Features
 
@@ -34,8 +41,13 @@ in a single mostly-static binary on a Debian Trixie-based distroless base.
 The speed test's uploads never land there: PHP reads no request body over
 8 KiB (`post_max_size = 8K`), and an upload is 20 MiB, so PHP never reads
 one, and `/tmp` does not grow however many tests run at once. What `/tmp`
-holds is the configuration the bootstrap writes on every start and PHP's
-session files.
+holds is:
+
+- `/tmp/librespeed`: the page, its settings and the server's
+  configuration, which the bootstrap writes on every start, and the lock
+  file the stats login takes;
+- `/tmp/caddy`: Caddy's own state, the configuration it autosaves among it;
+- the session files PHP makes for visits to the stats page.
 
 Nothing in the image opens a connection out. PHP's URL streams are off,
 there is no ipinfo.io API key, and ISP names come from the offline database
@@ -255,10 +267,12 @@ and finds one by id, is served only when `STATS_PASSWORD` is set.
 The results live in `/data/telemetry.db`, which upstream's own code makes
 at the first start, so its schema is always upstream's. The container
 refuses to start, and logs why, if `/data` is not writable by uid 65532, if
-an existing `telemetry.db` is not readable and writable by it, or if SQLite
-cannot open it. Served, any of those would answer every result with an
-empty 200 and record none. After restoring a backup as root, give the files
-back to uid 65532.
+an existing `telemetry.db` is not readable and writable by it, if SQLite
+cannot open it, or, with `STATS_PASSWORD` set, if an existing
+`stats-login.db` is not readable and writable by it. Served, any of the
+first three would answer every result with an empty 200 and record none,
+and the last would answer every login with a 500. After restoring a backup
+as root, give the files back to uid 65532.
 
 **The salt.** With `ENABLE_ID_OBFUSCATION=true`, the first start writes
 `/data/idObfuscation_salt.php`, readable by uid 65532 alone, and no later
@@ -322,9 +336,10 @@ this for a container on a network made with `podman network create`: every
 connection to a published port arrives from the container's own address.
 Then every client lands in one bucket, so anyone can keep the admin locked
 out, and recreating the container, which draws a new address, clears a
-lockout. The address shown and recorded for every visitor is that one too. Use a network mode or a proxy that preserves client addresses, or
-put a proxy that appends `X-Forwarded-For` in front, on the container's
-network, and set `TRUSTED_PROXIES` to it.
+lockout. The address shown and recorded for every visitor is that one too.
+Use a network mode or a proxy that preserves client addresses, or put a
+proxy that appends `X-Forwarded-For` in front, on the container's network,
+and set `TRUSTED_PROXIES` to it.
 
 **Uploads.** The speed test uploads in requests of 20 MiB, 4 MiB from Chrome
 on mobile, so a proxy must pass request bodies of at least 20 MiB. One that
@@ -350,26 +365,48 @@ it alone.
 
 ## Dependency updates
 
-Every input the Containerfile names is pinned: the builder, runtime and
-fetch-stage images by digest, LibreSpeed by version and the commit its tag
-names, and PHP, Caddy, its plugins and static-php-cli by version or commit.
-The C libraries static-php-cli builds into FrankenPHP are not: it still
-takes openssl, zlib and others from their newest release whenever the image
-is built.
+Every input the Containerfile names is pinned: the fetch stage's Debian
+image and the distroless runtime by digest, the FrankenPHP binary by the
+digest of `ghcr.io/divbast/frankenphp:librespeed`, and LibreSpeed by version
+and the commit its tag names. Two packages the fetch stage installs are not:
+`git` and `ca-certificates`, with what they depend on, come from Debian's
+archive as it stands on the day of the build. They only fetch LibreSpeed
+and check its tag; the image takes nothing from that stage but LibreSpeed's
+own files.
+
+The binary's own inputs, PHP, Caddy, its plugins and static-php-cli, are
+pinned in divbast/frankenphp, which also fails its build unless the binary
+loads exactly the PHP extensions this image needs. The C libraries
+static-php-cli builds into it are not pinned there: openssl, zlib and
+several others come from their newest release, and libaom from its main
+branch, whenever the binary is built. So a new `:librespeed` digest can
+carry newer C code with no pin moved, and that is how fixes to those
+libraries arrive.
+
 A pin only moves through a pull request, and
 [Renovate](https://docs.renovatebot.com/) opens those. It runs every morning,
-after every merge to `main` and whenever CI finishes on one of its branches,
-from `.github/workflows/renovate.yml` in this repository, as the divbast
-org's `divbast-renovate` GitHub App, and reports on the Dependency Dashboard
-issue. A LibreSpeed release arrives as one pull request that moves the
-version and the commit together, and the build fails if the tag no longer
-names that commit.
+after every merge to `main`, whenever CI finishes on one of its branches and
+when the Dependency Dashboard issue is edited, from
+`.github/workflows/renovate.yml`, which calls divbast/ci's shared Renovate
+workflow, as the divbast org's `divbast-renovate` GitHub App. Its settings
+are divbast/renovate-config's shared presets, and `renovate.json` adds only
+LibreSpeed's release manager. The pull requests Renovate opens here are:
+
+- A LibreSpeed release arrives as one pull request that moves the version
+  and the commit together, and the build fails if the tag no longer names
+  that commit.
+- A new `:librespeed` binary arrives as a pull request that moves the
+  digest, and CI verifies the new digest's attestation before it builds.
+- A release of divbast/ci arrives as one pull request that moves every
+  workflow's pin of it together.
 
 Renovate merges its own pull requests once every check on one has passed,
-majors and LibreSpeed releases included, while the repository variable
-`LIBRESPEED_AUTOMERGE` is `enabled`. Any other value, or none, stops it from
-the next run, and Renovate goes on opening and rebasing pull requests for a
-person to merge:
+LibreSpeed releases included, while the repository variable
+`LIBRESPEED_AUTOMERGE` is `enabled`. Two kinds first wait for someone to
+approve them on the Dependency Dashboard: a new major version of divbast/ci,
+and a raise of `go.mod`'s `go` line. Any other value of the variable, or
+none, stops merging from the next run, and Renovate goes on opening and
+rebasing pull requests for a person to merge:
 
     gh variable set LIBRESPEED_AUTOMERGE --body disabled
 
@@ -381,7 +418,8 @@ squash, which GitHub signs, because `main` accepts only signed commits.
 run publishes `main` if anything merged since the last image, so however many
 updates land in a day, users see one new image at most. An urgent fix need not
 wait: a manual run of the `build` workflow from `main` (Actions, build, Run
-workflow) publishes at once.
+workflow) publishes at once. Neither ever replaces `:latest` with an image of
+an older commit.
 
 A daily stall check, `.github/workflows/stall.yml`, fails, and GitHub emails
 you, when a Renovate pull request has been open more than 14 days or red or
@@ -405,6 +443,50 @@ and this repository's rulesets are all managed from
 4. When you are ready for Renovate to merge on its own, run
    `gh variable set LIBRESPEED_AUTOMERGE --body enabled`.
 
+## Verifying the image
+
+Every image published from `main` carries an attestation of where it was
+built, signed with Sigstore. With [gh](https://cli.github.com/) 2.102.0 or
+newer:
+
+    gh attestation verify oci://ghcr.io/divbast/librespeed:latest --repo divbast/librespeed-oci-image --signer-workflow divbast/ci/.github/workflows/app-publish.yml --source-ref refs/heads/main
+
+`--repo` and `--source-ref` say the image was built from this repository's
+`main` branch, and `--signer-workflow` that divbast/ci's publish workflow,
+which this repository's `build` workflow calls, signed it. Older versions of
+gh compare `--signer-workflow` with only the start of the signer's identity,
+and `--source-ref` without regard to case.
+
+If gh reports that its token was denied, for an image anyone may pull, it
+is sending a registry login from Docker's configuration, such as a stale one
+or what a credential helper hands it, which GHCR refuses. Point
+`DOCKER_CONFIG` at an empty directory:
+
+    mkdir -p /tmp/empty-docker-config
+    DOCKER_CONFIG=/tmp/empty-docker-config gh attestation verify oci://ghcr.io/divbast/librespeed:latest --repo divbast/librespeed-oci-image --signer-workflow divbast/ci/.github/workflows/app-publish.yml --source-ref refs/heads/main
+
+Images published before this repository moved onto divbast/ci's shared
+workflows were signed by its own `build` workflow instead, so the command
+fails for them. Verify one of those with
+`--signer-workflow divbast/librespeed-oci-image/.github/workflows/build.yml`.
+Every image published since the move is signed by divbast/ci's
+`app-publish.yml`.
+
+**The FrankenPHP binary.** The image's binary is copied from
+`ghcr.io/divbast/frankenphp:librespeed`, by the digest the Containerfile's
+`COPY --from=` names. Take that digest from the Containerfile at the commit
+the image was built from, its `org.opencontainers.image.revision`:
+
+    grep -o 'frankenphp:librespeed@sha256:[0-9a-f]*' Containerfile
+
+and, with `<digest>` standing for its `sha256:…` part, check that
+divbast/frankenphp's own build on its `main` branch made it:
+
+    gh attestation verify oci://ghcr.io/divbast/frankenphp@<digest> --repo divbast/frankenphp --signer-workflow divbast/frankenphp/.github/workflows/build.yml@refs/heads/main --source-ref refs/heads/main
+
+CI runs the same check before it builds anything, so a binary that fails it
+never reaches an image built here.
+
 ## Licences in the image
 
 The image's `org.opencontainers.image.licenses` label is
@@ -426,10 +508,10 @@ fetches a newer copy, since it makes no outbound connection, so its ISP
 names are as current as the copy that release carries.
 
 The label covers this repository, LibreSpeed, and the data and fonts above.
-The FrankenPHP binary (PHP, Caddy and the libraries built into it), the
-distroless base image, and the MaxMind reader and Composer autoloader inside
-upstream's `geoip2.phar` are other projects' work, and carry their own
-licences.
+The FrankenPHP binary divbast/frankenphp builds (PHP, Caddy and the
+libraries built into it), the distroless base image, and the MaxMind reader
+and Composer autoloader inside upstream's `geoip2.phar` are other projects'
+work, and carry their own licences.
 
 ## AI/LLM Disclosure
 

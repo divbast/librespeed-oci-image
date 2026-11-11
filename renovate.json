@@ -1,15 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "semanticCommits": "disabled",
-  "rebaseWhen": "behind-base-branch",
-  "automerge": true,
-  "automergeType": "pr",
-  "automergeStrategy": "squash",
-  "platformAutomerge": false,
-  "ignoreTests": false,
-  "commitMessageAction": "update",
-  "commitBody": "{{#if (equals updateType 'digest')}}Upstream rebuilt the tag, so the pinned digest is stale.{{else}}Upstream published a newer release.{{/if}}\n\nDeveloped-by: Aryan Ameri <github@aryan.ameri.coffee>\nAssisted-by: <Renovate:renovate-{{{renovateVersion}}}>",
+  "extends": ["github>divbast/renovate-config", "github>divbast/renovate-config:app"],
   "customManagers": [
     {
       "customType": "regex",
@@ -20,130 +11,15 @@
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.+)$",
       "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG PHP_VERSION, which build-static.sh would otherwise resolve to the newest 8.5 at build time. php-src tags releases as php-8.5.11.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG PHP_VERSION=(?<currentValue>\\S+)"],
-      "depNameTemplate": "php/php-src",
-      "datasourceTemplate": "github-tags",
-      "extractVersionTemplate": "^php-(?<version>\\d+\\.\\d+\\.\\d+)$"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG CADDY_VERSION, which xcaddy would otherwise resolve to the newest Caddy at build time.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG CADDY_VERSION=(?<currentValue>\\S+)"],
-      "depNameTemplate": "github.com/caddyserver/caddy/v2",
-      "datasourceTemplate": "go"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG CBROTLI_VERSION, which xcaddy would otherwise resolve to the newest plugin at build time.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG CBROTLI_VERSION=(?<currentValue>\\S+)"],
-      "depNameTemplate": "github.com/dunglas/caddy-cbrotli",
-      "datasourceTemplate": "go"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG MERCURE_VERSION, which xcaddy would otherwise resolve to the newest plugin at build time.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG MERCURE_VERSION=(?<currentValue>\\S+)"],
-      "depNameTemplate": "github.com/dunglas/mercure/caddy",
-      "datasourceTemplate": "go"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG VULCAIN_VERSION, which xcaddy would otherwise resolve to the newest plugin at build time.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG VULCAIN_VERSION=(?<currentValue>\\S+)"],
-      "depNameTemplate": "github.com/dunglas/vulcain/caddy",
-      "datasourceTemplate": "go"
-    },
-    {
-      "customType": "regex",
-      "description": "ARG SPC_COMMIT, the static-php-cli commit the FrankenPHP build runs in place of the nightly spc build-static.sh would download. Its v3 branch has no tags, so git-refs follows the branch head and the commit moves as a digest.",
-      "managerFilePatterns": ["/^Containerfile$/"],
-      "matchStrings": ["ARG SPC_COMMIT=(?<currentDigest>[a-f0-9]{40})"],
-      "currentValueTemplate": "v3",
-      "depNameTemplate": "crazywhalecc/static-php-cli",
-      "packageNameTemplate": "https://github.com/crazywhalecc/static-php-cli",
-      "datasourceTemplate": "git-refs"
     }
   ],
   "packageRules": [
-    {
-      "description": "Subject prefix for the image's build inputs. Kernel style, 'subsystem: short description', because these are commits on main like any other.",
-      "matchManagers": ["dockerfile"],
-      "commitMessagePrefix": "build:"
-    },
-    {
-      "description": "Subject prefix for the binary's pinned roots, which are build inputs too.",
-      "matchDepNames": [
-        "php/php-src",
-        "github.com/caddyserver/caddy/v2",
-        "github.com/dunglas/caddy-cbrotli",
-        "github.com/dunglas/mercure/caddy",
-        "github.com/dunglas/vulcain/caddy",
-        "crazywhalecc/static-php-cli"
-      ],
-      "commitMessagePrefix": "build:"
-    },
-    {
-      "description": "One PR for the builder, Caddy and its plugins. A FrankenPHP release can require a newer Caddy or plugin, and test/pinned-versions.sh fails any build whose binary disagrees with a pin, so moving one without the others goes red.",
-      "matchDepNames": [
-        "dunglas/frankenphp",
-        "github.com/caddyserver/caddy/v2",
-        "github.com/dunglas/caddy-cbrotli",
-        "github.com/dunglas/mercure/caddy",
-        "github.com/dunglas/vulcain/caddy"
-      ],
-      "groupName": "frankenphp"
-    },
-    {
-      "description": "static-php-cli in a PR of its own, moved at most once a day. Its v3 branch took 1 to 13 commits on each day it moved from September to November 2026, and in the frankenphp group each one restarted the builder's CI from a cold cache. renovate.json sets no schedule of its own because renovate.yml's 18:17 UTC cron is Renovate's only clock, so this window exists for spc alone: 18:00 to 03:59 UTC holds that cron and every start GitHub gave it in the three weeks to 2026-11-10, which came 2.5 to 7.25 hours late, between 20:51 and 01:32, with over two hours to spare. updateNotScheduled is off because Renovate would otherwise still push a newer commit to an open branch outside the window, which is exactly what the runs that merges and CI completions start during the rest of the day would do. A run that starts later still costs spc a day, nothing more. A builder that needs a newer spc fails its CI until this lands.",
-      "matchDepNames": ["crazywhalecc/static-php-cli"],
-      "schedule": ["* 0-3,18-23 * * *"],
-      "updateNotScheduled": false,
-      "commitBody": "static-php-cli moved the head of its v3 branch, which has no tags, so the pinned commit fell behind it.\n\nDeveloped-by: Aryan Ameri <github@aryan.ameri.coffee>\nAssisted-by: <Renovate:renovate-{{{renovateVersion}}}>"
-    },
-    {
-      "description": "Subject prefix for the local toolchain: mise.toml and the composer-pinned PHPStan.",
-      "matchManagers": ["mise", "composer"],
-      "commitMessagePrefix": "tools:"
-    },
-    {
-      "description": "Subject prefix for the workflows' action pins and the Renovate image itself.",
-      "matchManagers": ["github-actions"],
-      "commitMessagePrefix": "ci:"
-    },
-    {
-      "description": "jq tags releases as jq-1.8.2. mise strips that prefix from aqua's registry entry; Renovate does not read the aqua registry, so without this every candidate version is discarded as unparseable and no PR is ever raised.",
-      "matchDepNames": ["aqua:jqlang/jq"],
-      "extractVersion": "^jq-(?<version>.+)"
-    },
-    {
-      "description": "trivy is looked up on Docker Hub, not GitHub. The aquasecurity org has an IP allow list, and GitHub enforces it on API reads by an App installed on an organisation, as divbast-renovate is, so every github-tags or github-releases lookup is refused and the 403 surfaces only as no-result. mise still installs from the release download, which the allow list does not cover. aquasec/trivy is pushed by the same GoReleaser run that publishes those binaries, tagged with the same bare version. Docker versioning keeps latest, canary and the older per-architecture tags such as 0.71.2-amd64 out of the candidates.",
-      "matchDepNames": ["aqua:aquasecurity/trivy"],
-      "overrideDatasource": "docker",
-      "overridePackageName": "aquasec/trivy",
-      "versioning": "docker"
-    },
     {
       "description": "The LibreSpeed release merges once every check passes, like every other update here, and majors are no exception: the acceptance suite, not the size of the bump, is what holds a release back.",
       "matchDepNames": ["librespeed/speedtest"],
       "labels": ["librespeed"],
       "commitMessagePrefix": "librespeed:",
       "automerge": true
-    },
-    {
-      "matchDepNames": ["dunglas/frankenphp"],
-      "labels": ["frankenphp"],
-      "prBodyNotes": [
-        "The acceptance suite asserts the binary carries no file capability. Upstream's own FrankenPHP builds set `cap_net_bind_service=ep`, and a binary with a file capability cannot be exec'd at all under `--cap-drop ALL`."
-      ]
     }
   ]
 }

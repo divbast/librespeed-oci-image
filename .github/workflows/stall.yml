@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
-# Fails, so GitHub emails someone, when the update machine has stopped
-# without anything failing loudly: a Renovate pull request that never goes
-# green or never finishes, Renovate itself silent, or daily slots that
-# should have published and did not. A scheduled run's failure goes to
-# whoever last edited the cron line below. The checks live in test/stall.sh.
+# The daily stall check, through divbast/ci's stall.yml: a Renovate pull
+# request that never goes green or never finishes, Renovate itself silent,
+# or daily slots that should have published and did not. A scheduled run's
+# failure goes to whoever last edited the cron line below.
 
 name: stall
 
@@ -27,43 +26,13 @@ concurrency:
 jobs:
   stall:
     name: stall
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    uses: divbast/ci/.github/workflows/stall.yml@d85c5b730d779272e44c231fd5ed808d952b10a3 # v1.3.0
+    with:
+      published: ghcr.io/divbast/librespeed:latest
     permissions:
-      contents: read
+      contents: read # read main, compare commits, the repository's age
       pull-requests: read # list Renovate's pull requests
-      actions: read # list the Renovate and build runs
+      actions: read # list the Renovate and slot runs
       checks: read # read each pull request's check runs
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      OPEN_DAYS: 14
-      STUCK_HOURS: 24
-      RUN_HOURS: 24
-      LOST_SLOTS: 2
-      PUBLISHED: ghcr.io/divbast/librespeed:latest
-    # Every step runs whatever the one before found, so one run names every
-    # stall.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # For jq
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
-
-      - name: Renovate pull requests open too long
-        if: ${{ !cancelled() }}
-        run: test/stall.sh open
-
-      - name: Renovate pull requests red or pending too long
-        if: ${{ !cancelled() }}
-        run: test/stall.sh stuck
-
-      - name: Renovate silent
-        if: ${{ !cancelled() }}
-        run: test/stall.sh renovate
-
-      - name: Daily slots lost
-        if: ${{ !cancelled() }}
-        run: test/stall.sh slots
+      statuses: read # and its commit statuses
+      packages: read # tell a private image from an absent one

@@ -10,9 +10,12 @@ a non-root user.
 Published as `ghcr.io/divbast/librespeed`, from the divbast organisation, whose
 settings, rulesets and Renovate wiring live in `divbast/infra`.
 
-The pipeline (the workflows, the justfile, `mise.toml`, the lint configs, the
-test harness and `renovate.json`) is a deliberate copy of
-`divbast/baikal-oci-image`'s, to be replaced by divbast's shared workflows.
+What makes the image LibreSpeed's lives here: the Containerfile, the
+bootstrap, the Caddy and PHP configuration, the health probe and endpoint,
+the stats login, and the tests of each. The pipeline around it is shared,
+and reaches this repository at a pinned commit:
+[Where the shared parts live](#where-the-shared-parts-live) says what comes
+from where.
 
 ## CRITICAL: Git Commit Message Format
 
@@ -71,8 +74,9 @@ breaking change.
   (a Quadlet's `HealthCmd=` takes the same value) — no leading `"CMD"`,
   because Podman before 5.8.0 re-splits such an array into one token instead
   of running it. Tracked upstream as podman/podman#25454 and #18904. The
-  acceptance suite passes the same array under Podman, and checks the
-  image's `HEALTHCHECK` under Docker only
+  contract suite checks the image's `HEALTHCHECK` is that array in exec
+  form, and has each engine judge the container: Docker by the image's
+  `HEALTHCHECK`, Podman by the same array passed as `--health-cmd`
 - **The shipped probe asserts two halves, and neither implies the other.**
   `/healthz` on 8081 checks `ini`, `phar`, `mmdb` and, with telemetry on,
   `database`, from inside the server, but never goes through 8080's routes.
@@ -90,9 +94,9 @@ breaking change.
   `site.caddy` adds is a `handle` block, because Caddy sorts a bare directive
   after the catch-all 404, and the stats login's two blocks come before
   `handle /results/stats.php`, because handle blocks with equally long paths
-  keep the order they are written in. Section 5's dot-segment checks hold
-  each route to the script it names; FrankenPHP 1.12.7 fails them, so a
-  builder that brings back its raw-path split goes red
+  keep the order they are written in. `TestDotSegments` holds each route
+  to the script it names; FrankenPHP 1.12.7 fails it, so a binary that
+  brings back its raw-path split goes red
 - **Generate config only with `var_export`, `json_encode` and
   `htmlspecialchars`.** Upstream's entrypoint seds raw env values into PHP,
   so a `'` in one injects code. No env value reaches PHP, JSON, HTML or the
@@ -104,23 +108,39 @@ breaking change.
   is fixed text, `global.caddy` holds only the addresses `inet_ntop` wrote,
   `stats-password.hash` only `password_hash()` output, and the obfuscation
   salt, in upstream's format, only `bin2hex()` output
-- **Every variable is read through `envBool` or `envString` with a literal
-  name, and is in the README's Env Vars table.** `test/env-docs.sh`, in
-  `just lint`, fails otherwise, and fails on any read whose name is not
-  written where it is read. The switches take exactly `true` or `false`, and
-  every variable is checked before anything is written, so a typo stops the
+- **Every variable the image reads is named by a literal where it is
+  read, and is in the README's Env Vars table.** The bootstrap reads each
+  through `envBool` or `envString`. `TestEnvDocs` (`test/envdocs`), which
+  `just lint` runs through `go-test`, fails on a variable read that the
+  table does not name, on a row for a variable nothing reads, and on any
+  call of `getenv`, `envBool` or `envString` whose first argument is not a
+  literal name. It scans the image's four PHP files in Go, without PHP,
+  and allows three exemptions, each by file and by the function it is
+  written in: `getenv($name)` in `envBool` and in `envString`, and the
+  bootstrap's top-level `getenv()`, which hands the server its
+  environment. The same call anywhere else fails, and so does an exemption
+  nothing matches. The switches take exactly `true` or `false`, and every
+  variable is checked before anything is written, so a typo stops the
   start instead of meaning the default
-- **`test/upstream-layout.sh` guards every upstream marker the image relies
-  on**: each file it serves or requires, each string `renderIndex` replaces,
-  `stats.php`'s login checks, `idObfuscation.php`'s salt path and the empty
-  `$IPINFO_APIKEY`. The fetch stage runs it, so a release that moves or
-  rewords one fails the build instead of shipping. A marker the image starts
-  to rely on goes into the guard in the same change
+- **`test/upstream-layout.sh` guards every upstream path and string the
+  image relies on**: each path the fetch stage copies out of the checkout;
+  the four fonts the licences label names, Open Sans in `results/` and
+  Inter inside `frontend/`, which is copied whole; each string
+  `renderIndex` replaces, exactly once, as the bootstrap requires;
+  `stats.php`'s login checks; `idObfuscation.php`'s salt path; and
+  `getIP_ipInfo_apikey.php` as upstream's own empty key and nothing else.
+  The fetch stage runs it, so a release that moves or rewords one fails the
+  build instead of shipping. `TestUpstreamLayout` (`test/upstreamlayout`)
+  runs it over a fixture tree changed one way per case, and
+  `TestGuardCoversTheCopy` fails when the Containerfile copies a path from
+  `/src` that the guard does not name. A path or string the image starts to
+  rely on goes into the guard, with a case for it, in the same change
 - **Nothing listens but 8080 and 8081.** Caddy's admin API would otherwise
   listen on 127.0.0.1:2019 and take a new config, with no credentials, from
   anything sharing the container's network: under host networking, every
-  process on the host. Section 2 reads the kernel's socket tables and fails
-  on any other port a process in the container listens on
+  process on the host. The contract suite reads the kernel's socket tables
+  and fails on any other TCP port a process in the container listens on,
+  and on any UDP socket one holds
 - **One process tree, always.** FrankenPHP is a single binary containing PHP and
   Caddy, and the entrypoint `pcntl_exec`s it so it inherits PID 1. A dead PHP kills
   the container. Do not add a supervisor, s6, or a second long-running process
@@ -129,63 +149,80 @@ breaking change.
   `$IPINFO_APIKEY` must stay empty, and the layout guard fails the build if
   it is not; ISP names come from the bundled mmdb. The stability test's
   external targets are fetched by the visitor's browser, never the
-  container. Section 3 proves it from a genuinely `--internal` network
+  container. The contract suite proves it from a genuinely `--internal`
+  network
 - **Nothing may add a shell or a package manager to the final image.** The base is
   distroless; that is the point. What it removes is us running apt, not the
   patching itself - `cc-debian13` still ships libc6, libssl3t64, libstdc++6,
   libgcc-s1, libgomp1, libzstd1 and zlib1g, all executable code that takes CVEs.
   That obligation moves to the base image's own rebuilds — and **nothing in
   this repository collects them on its own.** Rebuilding an unchanged
-  Containerfile does not pick them up. **Renovate is the update path**: it runs
-  every morning, after every merge to main and whenever CI finishes on one
-  of its branches, from
-  `.github/workflows/renovate.yml`, as the org's `divbast-renovate` App,
-  managed from `divbast/infra`. After a merge it rebases every
-  open PR left behind main, since GitHub re-runs no checks when a base moves
-  and a green check on a stale base proves nothing. **It merges its own
-  PRs** once every check passes, with a squash, while the repository
-  variable `LIBRESPEED_AUTOMERGE` is `enabled`; any other value stops merging
-  from the next run. **A merge never publishes.** CI's daily run is the
-  publishing slot: it publishes main when main moved since the commit the
-  published `:latest` was built from, so users see at most one new image a
-  day, and a manual run of `build` publishes at once for an urgent fix.
-  Neither ever moves `:latest` backwards (`test/publish-decision.sh`): an
-  older commit would take back whatever the newer image fixed. The daily run
-  also catches upstream breakage early — a LibreSpeed tag that moved, a
-  builder that changed behaviour — and a new advisory against what is
-  already shipped surfaces there as a code scanning alert, not a red run.
-  `.github/workflows/stall.yml` fails each day that updates have stopped
+  Containerfile does not pick them up. **Renovate is the update path**: it
+  runs every morning, after every merge to main and whenever CI finishes on
+  one of its branches, from `.github/workflows/renovate.yml`, which calls
+  divbast/ci's `renovate.yml`, as the org's `divbast-renovate` App, managed
+  from `divbast/infra`. After a merge it rebases every open PR left behind
+  main, since GitHub re-runs no checks when a base moves and a green check
+  on a stale base proves nothing. **It merges its own PRs** once every check
+  passes, with a squash, while the repository variable
+  `LIBRESPEED_AUTOMERGE` is `enabled`; any other value stops merging from
+  the next run. A new major of divbast/ci, and a raise of `go.mod`'s `go`
+  line, wait for approval on the Dependency Dashboard first. **A merge never
+  publishes.** `build.yml`'s daily run is the publishing slot, through
+  divbast/ci's `app-publish.yml`: it publishes main when main moved since
+  the commit the published `:latest` was built from, so users see at most
+  one new image a day, and a manual run of `build` publishes at once for an
+  urgent fix. Neither ever moves `:latest` backwards
+  (`divbast-publish-decision`): an older commit would take back whatever the
+  newer image fixed. The daily run also catches upstream breakage early — a
+  LibreSpeed tag that moved, a FrankenPHP binary that changed behaviour —
+  and a new advisory against what is already shipped surfaces there as a
+  code scanning alert, not a red run. `.github/workflows/stall.yml`, through
+  divbast/ci's `stall.yml`, fails each day that updates have stopped
   flowing: a Renovate PR stuck, Renovate silent, or two slots lost in a row
-- **Every input is pinned in the Containerfile**, not resolved at build time.
-  LibreSpeed releases carry no assets, only GitHub's generated archives,
-  which are not byte-stable, so `LIBRESPEED_VERSION` sits directly above
-  `LIBRESPEED_COMMIT`, Renovate's regex moves the two in one PR, and the
-  fetch stage checks out the commit and fails if the tag no longer names it.
-  The two ARGs must stay adjacent and in that order. The builder, runtime and
-  fetch-stage images are pinned by digest. For the binary, `PHP_VERSION`,
-  `CADDY_VERSION` and the three plugin ARGs fix what `build-static.sh` and
-  xcaddy would otherwise take as newest; Renovate moves the builder digest,
-  Caddy and the plugins together as one `frankenphp` group; and
-  `test/pinned-versions.sh` fails the build if the binary's own build info
-  disagrees with any pin. spc is built from `SPC_COMMIT` in place of the
-  nightly download, and `test/pinned-spc.sh` fails the build if anything
-  else ran `spc craft`. **What spc downloads is still chosen at build time:**
-  several libraries, openssl and zlib among them, come from the newest
-  release that matches. `PHP_EXTENSIONS` names exactly what the binary
-  loads, and `test/extensions.sh` fails the build if the two disagree or if
-  gd lacks FreeType or PNG, which the share image needs
+- **Every input the Containerfile names is pinned, but for the two apt
+  packages the fetch stage installs.** LibreSpeed releases carry no assets,
+  only GitHub's generated archives, which are not byte-stable, so
+  `LIBRESPEED_VERSION` sits directly above `LIBRESPEED_COMMIT`, Renovate's
+  regex moves the two in one PR, and the fetch stage checks out the commit
+  and fails if the tag no longer names it. The two ARGs must stay adjacent
+  and in that order. The fetch-stage and runtime images are pinned by
+  digest, and so is the FrankenPHP binary. The fetch stage's `git` and
+  `ca-certificates`, and what they depend on, are whatever Debian's archive
+  holds on the day of the build: they only fetch, and nothing of them
+  reaches the image
+- **The FrankenPHP binary is divbast/frankenphp's, by digest.** The runtime
+  stage copies it from `ghcr.io/divbast/frankenphp:librespeed@sha256:…`.
+  Before `app-check.yml` builds anything, `divbast-verify-frankenphp` has gh
+  verify that frankenphp's own `build.yml`, on its main, attested that
+  digest. It counts every mention of the image in the Containerfile's
+  instructions, wherever it stands, and refuses all but exactly one, that
+  `COPY`'s `--from=`: never name the image in an `ARG`, a `LABEL` or a
+  `RUN`. A local `just build` does not verify; `just ci-tools &&
+  .ci/bin/divbast-verify-frankenphp` does. Renovate moves the digest when
+  frankenphp publishes a new `:librespeed`. The binary's own pins (the
+  builder image, `PHP_VERSION`, `CADDY_VERSION`, the three plugins and spc's
+  commit), LibreSpeed's extension list, with gd's FreeType and PNG, which
+  the share image needs, and the in-build checks that hold the binary to
+  all of them live in divbast/frankenphp, the list in its
+  `apps/librespeed.env`. **What spc downloads is still chosen at build
+  time** there: several libraries, openssl and zlib among them, come from
+  their newest release, and libaom from its main branch
 - **The binary must never carry a file capability.** The official FrankenPHP build
   carries `cap_net_bind_service=ep`, and a binary with a file capability cannot be
   exec'd at all under `--cap-drop ALL` — it dies with `Operation not permitted`
-  and exit 126 before PHP starts
+  and exit 126 before PHP starts. divbast/frankenphp refuses to publish a
+  binary that carries one, and the contract suite's `file-capability` check
+  fails on one
 - **`post_max_size` stays under 16 KiB.** PHP keeps a body it reads in
   memory up to 16 KiB and spools the rest into `/tmp`. At `8K` it reads none
   of the speed test's 20 MiB uploads, so `/tmp` stays as it is under any
   load and 16 MiB is enough. Upstream's `32M` cut even a single upload short
   under the 16 MiB tmpfs while the client still saw a 200 with every byte
-  sent, which is why section 7 checks what the server read, from the access
-  log. It follows that no form may outgrow 8 KiB (sections 11 and 14 assert
-  the telemetry record and the login fit), that `telemetry_level` stays
+  sent, which is why `TestUploads` and `TestParallelUploads` check what the
+  server read, from the access log. It follows that no form may outgrow
+  8 KiB (`TestTelemetry` and `TestStatsLogin` assert the telemetry record
+  and the login fit), that `telemetry_level` stays
   `basic` (`full` and `debug` send the worker's log, and at `debug` it
   outgrows the limit and upstream records a row of nulls), and that the
   image's own PHP reads `$_POST`, never `php://input`, which spools as much
@@ -205,13 +242,14 @@ breaking change.
   address, or with `TRUSTED_PROXIES`, `X-Forwarded-For` read right to left
   and strict. A range with a prefix of 0 is refused: every client of its
   family would be a trusted proxy, free to write an address of the other
-  family, which the range does not hold, and be counted as that. `REMOTE_ADDR` and upstream's own address handling stay as they
-  are: `getIP_util.php` trusts `Client-IP`, `X-Real-IP`, `X-Forwarded-For`
-  and `CF-Connecting-IPv6` from anyone, and the image leaves that alone.
+  family, which the range does not hold, and be counted as that.
+  `REMOTE_ADDR` and upstream's own address handling stay as they are:
+  `getIP_util.php` trusts `Client-IP`, `X-Real-IP`, `X-Forwarded-For` and
+  `CF-Connecting-IPv6` from anyone, and the image leaves that alone.
   Rootless Podman hands a container on a user-defined network every
-  connection to a published port from the container's own address, so the
-  acceptance suite fixes the stats server's address, or a restart would face
-  a new client
+  connection to a published port from the container's own address, so
+  `TestLockout` fixes the stats server's address, or a restart would face a
+  new client
 - **The application tree stays root-owned and unwritten.** What changes per
   start lives in `/tmp/librespeed`, mode 0700. What outlives a start lives in
   `/data`: `telemetry.db`, `idObfuscation_salt.php`, `stats-password.hash`
@@ -229,26 +267,89 @@ breaking change.
   cannot read as 0, which changes every id. `/healthz` opens the database
   read-only and never creates it
 
+## Where the shared parts live
+
+- **divbast/ci.** `just setup` checks it out into `.ci/`, which git and
+  the build context both ignore, at the one commit every workflow calls it
+  at: a release's full SHA, with its tag as the comment. Its README is the
+  reference for all of it:
+  - the reusable workflows: `app-check.yml` (lint; the image built for
+    amd64 and arm64 once the binary's attestation verifies; the acceptance
+    suite on each under Docker and rootless Podman; the scan),
+    `app-publish.yml` (the daily slot and the button only: push, index,
+    attest, then check `:latest` as an anonymous client pulls it),
+    `renovate.yml` and `stall.yml`. `build.yml`, `renovate.yml` and
+    `stall.yml` here call them, and keep their own triggers and the
+    `required` job;
+  - the recipes the justfile imports, `.ci/just/common.just` and
+    `.ci/just/app.just`. Recipes here call them from a recipe's body, never
+    as a dependency, so the justfile still parses before `.ci` exists;
+  - the Go tools, which `just ci-tools` builds into `.ci/bin/`, run from
+    this repository's root: `divbast-pin`, `divbast-verify-frankenphp`,
+    `divbast-scan`, `divbast-published-revision`,
+    `divbast-publish-decision`, `divbast-stall` and the rest;
+  - the acceptance `harness` and the `contract` suite, which `go.mod`
+    requires through `replace github.com/divbast/ci => ./.ci`, and the
+    probe's `harness/probe/core.php`, beside which `test/probe/app.php`
+    runs;
+  - `go/golangci.yml`, the one golangci-lint configuration, and
+    `.github/actionlint.yaml`.
+
+  A change to ci reaches this repository only through the Renovate PR that
+  moves every pin of it at once.
+  `just setup`, and the pin check (`divbast-pin`) in each ci workflow
+  that runs this repository's code, refuse workflows that call ci at more
+  than one commit
+- **divbast/frankenphp** builds and attests the binary,
+  `ghcr.io/divbast/frankenphp:librespeed`, with its pins, LibreSpeed's
+  extension list and the in-build checks on them
+- **divbast/renovate-config** holds the presets `renovate.json` extends.
+  `renovate.json` keeps only LibreSpeed's regex manager and its rule
+- **divbast/infra** holds the org's settings, this repository's rulesets,
+  the `divbast-renovate` App, the `renovate` environment and
+  `LIBRESPEED_AUTOMERGE`
+
 ## Key commands
 
-- `just setup` — install the pinned toolchain. One command on a fresh clone
-- `just build` — build the image locally
-- `just test` — build, then run the acceptance suite against it
-- `just lint` — pinact, zizmor, hadolint, `docker build --check`, ShellCheck,
-  `reuse lint`, PHPStan and `test/env-docs.sh`
-- `just scan` — Trivy over the image archive `just archive` writes and over
-  the published `:latest`, failing only on what the archive would add. Needs
-  network access to ghcr.io
-- `just actions-pin`, `just actions-update` — move the workflow's action pins
+- `just setup` — fetch divbast/ci into `.ci/` at the commit the workflows
+  pin, then install the pinned toolchain and PHPStan. One command on a
+  fresh clone, and again whenever the pin moves
+- `just build` — build the image locally. It does not verify the binary's
+  attestation; `just ci-tools && .ci/bin/divbast-verify-frankenphp` does,
+  with gh 2.102.0 or newer
+- `just acceptance` — `go test ./test/acceptance/...` against the image
+  `just build` wrote, under `ENGINE` (docker unless it says podman).
+  `ENGINE=docker IMAGE=localhost/librespeed:dev mise exec -- go test -run
+  TestRoutes ./test/acceptance/` runs one test
+- `just test` — build, then the acceptance suite
+- `just lint` — pinact, zizmor, actionlint, ShellCheck and shfmt, the Go
+  gates (the compiler, `go vet`, `go fix -diff`, `go mod tidy -diff`,
+  `golangci-lint fmt --diff` and `golangci-lint run`), `go-test`, `reuse
+  lint`, hadolint, `docker build --check` and PHPStan. `go-test` runs every
+  Go test under the race detector: `TestEnvDocs` and `TestUpstreamLayout`
+  among them, which need no network and no image, while the acceptance
+  suite skips when `IMAGE` is unset
+- `just archive`, `just scan` — write the image as an OCI archive, then run
+  `divbast-scan` over it and the published `:latest`, failing only on what
+  the archive would add. Needs network access to ghcr.io
+- `just actions-pin`, `just actions-update` — move the workflows' action pins
 - `just ci` — every gate, locally. Run this before committing
 
 ## Where the toolchain comes from
 
-- **`mise.toml` is where tool versions are written.** hadolint, ShellCheck,
-  reuse, just, jq, pinact, trivy and zizmor are all listed there. Every justfile
-  recipe runs through `mise exec`, so a recipe resolves those binaries and not a
-  same-named one on PATH. `gh` is the exception, and only as a local fallback
-  for the API token pinact, zizmor and spc's build need; CI passes its own
+- **`mise.toml` is where tool versions are written.** Go, golangci-lint,
+  hadolint, ShellCheck, shfmt, actionlint, reuse, just, pinact, trivy and
+  zizmor are all listed there. Every justfile recipe but `setup`, which
+  installs them, runs through `mise exec`, so a recipe resolves those
+  binaries and not a same-named one on PATH. `gh` is the exception, and
+  only as a local fallback for the API token pinact and zizmor need; CI
+  passes its own
+- **Go builds with the toolchain mise installs and nothing else.**
+  `GOTOOLCHAIN=local` keeps `go.mod`'s line from downloading another. And
+  `GOFLAGS=-mod=readonly`, because Composer's `vendor/` sits at the module
+  root, where Go would take it for a Go vendor directory once `go.mod` has a
+  `require`, and refuse to build; readonly is the default outside vendor
+  mode, and still refuses to edit `go.mod`
 - **`just lint` needs a running Docker daemon**, for `docker build --check`.
   `--check` is a buildx flag with no podman equivalent, so this one gate does
   not honour `ENGINE` and does not run without dockerd
@@ -257,8 +358,7 @@ breaking change.
   compiles PHP from source, which is minutes added to every CI run in order to
   analyse a handful of files. PHPStan is therefore pinned by `composer.lock`,
   and `phpstan.neon` sets `phpVersion` so the *analysis target* is fixed no
-  matter which PHP runs the analyser. `test/env-docs.sh` uses the host's PHP
-  too, for its tokenizer
+  matter which PHP runs the analyser
 - **So this repository carries `composer.json`, `composer.lock` and a
   `vendor/`, and that deserves an explanation**, because the image's whole
   claim is that no PHP toolchain reaches it. None of it does. The Containerfile
@@ -307,7 +407,8 @@ breaking change.
   what `login.php` sets. Its form posts to `stats.php?op=login`
 - **The one PHP 8.5 deprecation is `imagedestroy`**, which goes unlogged
   with every other deprecation
-- **PHP 8.5.12 fixes two RCEs**, so `PHP_VERSION` stays at or above it
+- **PHP 8.5.12 fixes two RCEs**, so divbast/frankenphp's `PHP_VERSION`
+  stays at or above it
 
 ## Code quality
 
@@ -315,7 +416,7 @@ breaking change.
   suppression, anywhere, needs an explicit, comment-level justification beside
   it to be accepted
 - **The scan blocks only what a change would add, and is advisory while
-  nothing is published.** `test/scan.sh` scans the candidate and the
+  nothing is published.** `divbast-scan` scans the candidate and the
   published `:latest` for the same arch from one Trivy database, and fails
   only on a HIGH or CRITICAL finding, the same vulnerability in the same
   package, that the published image lacks. No release can make an advisory
@@ -335,8 +436,23 @@ breaking change.
   for the Open Sans fonts and OFL-1.1 for Inter. A shipped file under
   another licence changes the label and the README's Licences section
   together
-- The acceptance suite runs the image under the *exact* confinement the contract
-  claims, `--tmpfs /tmp:size=16m` included, so a check can never pass under
-  looser settings than we ship. What CI proves is what ships
+- **The acceptance suite is Go, on divbast/ci's harness.** Every
+  container it starts runs under `harness.Contract("16m")`, the *exact*
+  confinement the contract claims, `--tmpfs /tmp:size=16m` included, so a
+  check can never pass under looser settings than we ship. What CI proves
+  is what ships. `TestContract` runs ci's contract suite against the image;
+  the other tests are LibreSpeed's own, one topic per file, and run in
+  parallel, each on fixed host ports of its own (18290 to 18311), apart
+  from the restart tests, whose phases share one volume and so run in turn.
+  What a test runs inside a container is a probe subcommand: ci's
+  `core.php`, or LibreSpeed's own in `test/probe/app.php`, which PHPStan
+  analyses at level max
+- **Go is modern and idiomatic, and linted strictly**, under ci's
+  `go/golangci.yml`. Bash is for what is short and will stay so: the
+  justfile's recipes. A check that runs inside a Containerfile build stage
+  is the exception, since a build stage has bash and no Go: it stays bash,
+  under ShellCheck `enable=all`, shfmt and `set -euo pipefail`, with a Go
+  test that runs it against fixtures and sees each way it can fail fail, as
+  `test/upstreamlayout` does for `upstream-layout.sh`
 - A test suite that has never failed proves nothing. When adding a check, prove
   it can fail before trusting it

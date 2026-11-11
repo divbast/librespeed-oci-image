@@ -12,8 +12,10 @@ parameters:
         - rootfs/usr/local/bin/librespeed-health
         - rootfs/usr/local/share/librespeed-health/index.php
         - rootfs/usr/local/share/librespeed-login/login.php
-        - test/in-container.php
+        - test/probe
 
-    # Scanned for definitions, not analysed
+    # Scanned for definitions, not analysed. test/probe/app.php runs beside
+    # divbast/ci's core probe, and uses what it defines.
     scanFiles:
         - stubs/librespeed-image.php
+        - .ci/harness/probe/core.php

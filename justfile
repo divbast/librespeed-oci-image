@@ -3,91 +3,54 @@
 
 set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
 
+# What divbast/ci's app recipes act on: the engine, the image the build
+# writes and the acceptance suite runs, where archive writes it and scan
+# reads it, and the published image scan compares it with
 ENGINE := env_var_or_default("ENGINE", "docker")
 IMAGE := "localhost/librespeed:dev"
 ARCHIVE := env_var_or_default("ARCHIVE", "/tmp/librespeed-image.tar")
-LAYOUT := ARCHIVE + ".layout"
-REPORT := ARCHIVE + ".report.json"
-SARIF := ARCHIVE + ".sarif"
 PUBLISHED := env_var_or_default("PUBLISHED", "ghcr.io/divbast/librespeed:latest")
-BASELINE := ARCHIVE + ".published.json"
+
+# build, acceptance, test, archive, scan and app-lint come from divbast/ci's
+# app.just, and the other lint recipes from its common.just. Each is run
+# from a recipe's body, never named as a dependency, so `just setup` still
+# runs before .ci exists.
+import? '.ci/just/common.just'
+import? '.ci/just/app.just'
 
 # Tool versions live in mise.toml
 
 default:
     @just --list
 
+# Fetch divbast/ci at the commit the workflows pin, then install the toolchain
 setup:
     #!/usr/bin/env bash
-    # This is the one recipe that must not run through `mise exec` shell 
+    # Not through the mise exec shell: this is what installs what it runs
     set -euo pipefail
+    # The one release commit every workflow calls divbast/ci at
+    uses="^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?divbast/ci/[^@[:space:]\"']+@[^[:space:]\"'#]+"
+    sha=$(grep -hoE "${uses}" .github/workflows/*.y*ml | sed 's/.*@//' | sort -u | paste -sd ' ' - || true)
+    if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "setup: the workflows must call divbast/ci at one full commit SHA, not at: ${sha:-none}" >&2
+        exit 1
+    fi
+    have=$(git -C .ci rev-parse HEAD 2>/dev/null || true)
+    if [[ "${have}" == "${sha}" ]]; then
+        echo "setup: .ci is already at ${sha}"
+    else
+        git init -q .ci
+        git -C .ci fetch -q --depth 1 https://github.com/divbast/ci "${sha}"
+        git -C .ci checkout -q FETCH_HEAD
+    fi
     mise install
     composer install
 
-# Build the image locally
-build:
-    # Docker only auto-discovers `Dockerfile`. Podman finds either
-    # gh's token, when gh is logged in, reaches spc as a secret so its GitHub
-    # API calls escape the unauthenticated rate limit. It never reaches a layer.
-    token="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || true)}"; \
-    if [[ -n "${token}" ]]; then \
-        GITHUB_TOKEN="${token}" {{ ENGINE }} build --secret id=github_token,env=GITHUB_TOKEN \
-            -f Containerfile -t {{ IMAGE }} .; \
-    else \
-        echo "gh is not logged in: building without a GitHub token" >&2; \
-        {{ ENGINE }} build -f Containerfile -t {{ IMAGE }} .; \
-    fi
-
-acceptance:
-    ENGINE={{ ENGINE }} IMAGE={{ IMAGE }} ./test/acceptance.sh
-
-# Build the image, then run the acceptance suite against it
-test: build acceptance
-
-# Write the image
-archive:
-    {{ ENGINE }} image save -o {{ ARCHIVE }} {{ IMAGE }}
-
-# Fail if the archive holds the GitHub token the build was given
-token-check:
-    token="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || true)}"; \
-    if [[ -n "${token}" ]]; then \
-        GITHUB_TOKEN="${token}" ./test/token-leak.sh {{ ARCHIVE }}; \
-    else \
-        echo "gh is not logged in: the build had no token to leak"; \
-    fi
-
-# Fail on any HIGH or CRITICAL vulnerability the published image does not have.
-# While nothing is published, every finding is reported and none fails
-scan:
-    rm -rf {{ LAYOUT }} && mkdir {{ LAYOUT }} && tar xf {{ ARCHIVE }} -C {{ LAYOUT }}
-    ./test/scan.sh {{ LAYOUT }} {{ REPORT }} {{ PUBLISHED }} {{ BASELINE }} {{ SARIF }}
-
-# Verify every action is a SHA. The workflow recipes skip until .github/workflows
-# exists
-actions-check:
-    if [[ -d .github/workflows ]]; then GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}" pinact run --verify --check; else echo "no workflows yet"; fi
-
-# Rewrite tag references to the SHA
-actions-pin:
-    GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}" pinact run
-
-# Move every action to latest release
-actions-update:
-    GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}" pinact run --update
-
-workflow-audit:
-    if [[ -d .github/workflows ]]; then GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}" zizmor --persona=auditor .github/workflows; else echo "no workflows yet"; fi
-
-lint: actions-check workflow-audit
-    hadolint Containerfile
-    # BuildKit's own linter
-    docker build --check -f Containerfile .
-    # Piped with -r so an empty match is a pass
-    git ls-files '*.sh' | xargs -r shellcheck
-    reuse lint
+# Every lint gate. Needs a running Docker daemon, for docker build --check
+lint:
+    {{ just_executable() }} actions-check workflow-audit actionlint shell-lint go-lint go-test reuse-lint app-lint
     vendor/bin/phpstan analyse --no-progress
-    # The README's Env Vars table names exactly the variables the image reads
-    ./test/env-docs.sh
 
-ci: lint test archive token-check scan
+# Every gate. Run before committing
+ci:
+    {{ just_executable() }} lint test archive scan
