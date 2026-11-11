@@ -108,18 +108,20 @@ breaking change.
   is fixed text, `global.caddy` holds only the addresses `inet_ntop` wrote,
   `stats-password.hash` only `password_hash()` output, and the obfuscation
   salt, in upstream's format, only `bin2hex()` output
-- **Every variable is read through `envBool` or `envString` with a literal
-  name, and is in the README's Env Vars table.** `TestEnvDocs`
-  (`test/envdocs`), which `just lint` runs through `go-test`, fails
-  otherwise, and fails on any read whose name is not written where it is
-  read. It scans the image's four PHP files in Go, without PHP, and allows
-  three exemptions, each by file and by the function it is written in:
-  `getenv($name)` in `envBool` and in `envString`, and the bootstrap's
-  top-level `getenv()`, which hands the server its environment. The same
-  call anywhere else fails, and so does an exemption nothing matches. The
-  switches take exactly `true` or `false`, and every variable is checked
-  before anything is written, so a typo stops the start instead of meaning
-  the default
+- **Every variable the image reads is named by a literal where it is
+  read, and is in the README's Env Vars table.** The bootstrap reads each
+  through `envBool` or `envString`. `TestEnvDocs` (`test/envdocs`), which
+  `just lint` runs through `go-test`, fails on a variable read that the
+  table does not name, on a row for a variable nothing reads, and on any
+  call of `getenv`, `envBool` or `envString` whose first argument is not a
+  literal name. It scans the image's four PHP files in Go, without PHP,
+  and allows three exemptions, each by file and by the function it is
+  written in: `getenv($name)` in `envBool` and in `envString`, and the
+  bootstrap's top-level `getenv()`, which hands the server its
+  environment. The same call anywhere else fails, and so does an exemption
+  nothing matches. The switches take exactly `true` or `false`, and every
+  variable is checked before anything is written, so a typo stops the
+  start instead of meaning the default
 - **`test/upstream-layout.sh` guards every upstream path and string the
   image relies on**: each path the fetch stage copies out of the checkout;
   the four fonts the licences label names, Open Sans in `results/` and
@@ -294,7 +296,7 @@ breaking change.
     `.github/actionlint.yaml`.
 
   A change to ci reaches this repository only through the Renovate PR that
-  moves every pin of it at once, which this repository's CI then tests.
+  moves every pin of it at once.
   `just setup`, and the pin check (`divbast-pin`) in each ci workflow
   that runs this repository's code, refuse workflows that call ci at more
   than one commit

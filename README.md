@@ -390,7 +390,7 @@ when the Dependency Dashboard issue is edited, from
 `.github/workflows/renovate.yml`, which calls divbast/ci's shared Renovate
 workflow, as the divbast org's `divbast-renovate` GitHub App. Its settings
 are divbast/renovate-config's shared presets, and `renovate.json` adds only
-what LibreSpeed's releases need:
+LibreSpeed's release manager. The pull requests Renovate opens here are:
 
 - A LibreSpeed release arrives as one pull request that moves the version
   and the commit together, and the build fails if the tag no longer names
