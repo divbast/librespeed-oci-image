@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
+# divbast/ci, checked out by `just setup` at the commit the workflows pin
+.ci/
 .agents/
 .superpowers/
 vendor/
