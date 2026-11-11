@@ -10,16 +10,8 @@ ENGINE="${ENGINE:-docker}"
 IMAGE="${IMAGE:-localhost/librespeed:dev}"
 PORT=18190
 BASE="http://127.0.0.1:${PORT}"
-HOSTILE_PORT=18191
-HOSTILE_BASE="http://127.0.0.1:${HOSTILE_PORT}"
 CTR=librespeed-acc
-INTERNAL_CTR=librespeed-acc-internal
-HOSTILE_CTR=librespeed-acc-hostile
-BADENV_CTR=librespeed-acc-badenv
-# Section 8 runs the bootstrap by hand in this one, which only sleeps
-RAW_ENV_CTR=librespeed-acc-raw-env
 NET=librespeed-acc-net
-INTERNAL_NET=librespeed-acc-internal-net
 # Sections 9 to 12 run one container at a time on this port
 TEL_PORT=18192
 # Rootless Podman hands the server a published port's connections from the
@@ -49,7 +41,7 @@ PROXIED_IP=10.89.77.10
 PROXIED_VOL=librespeed-acc-proxied
 PROXY_CTR=librespeed-acc-proxy
 PROXY_IP=10.89.77.20
-# Sections 17 to 19 use TEL_CTR and TEL_PORT too, and publish the health
+# Sections 17 and 18 use TEL_CTR and TEL_PORT too, and publish the health
 # listener, which a deployment keeps unpublished, only to test it
 HEALTH_PORT=18193
 HEALTH_BASE="http://127.0.0.1:${HEALTH_PORT}"
@@ -65,9 +57,6 @@ PROBE_SRC=./in-container.php
 
 # The probe lands on /tmp, the one tmpfs the contract grants
 PROBE=/tmp/in-container.php
-
-# What getIP.php answers a client on loopback
-GETIP_LOOPBACK='{"processedString":"127.0.0.1","rawIspInfo":""}'
 
 # The table upstream's getPdo() makes, as results_table prints it, before
 # any result is recorded
@@ -87,12 +76,7 @@ fi
 # Read from the image's HEALTHCHECK in section 17, under Docker
 HEALTH_START_PERIOD=0
 
-# The speed test's upload: speedtest_worker.js posts blobs of
-# xhr_ul_blob_megabytes, 20 by default, each of 1048576 bytes
-UPLOAD_BYTES=$((20 * 1048576))
 WORK=$(mktemp -d) || exit 1
-UPLOAD_BODY="${WORK}/upload.bin"
-head -c "${UPLOAD_BYTES}" /dev/zero >"${UPLOAD_BODY}" || exit 1
 
 # Ship the probe into a container. `cp` refuses a container whose root is
 # read-only, and with no volume there is nowhere else it could write, so the
@@ -142,23 +126,6 @@ probe() {
 	return "${rc}"
 }
 
-# probe-getip, asked again each second while the server is still starting.
-# Prints the body, or the last failure.
-getip_body() {
-	local ctr="${1}" out deadline=$((SECONDS + WAIT_FOR_PORT_SECONDS))
-	while :; do
-		if out=$("${ENGINE}" exec "${ctr}" "${PHP_BIN}" php-cli "${PROBE}" probe-getip 2>&1); then
-			printf '%s' "${out}"
-			return 0
-		fi
-		if ((SECONDS >= deadline)); then
-			printf '%s' "${out}"
-			return 1
-		fi
-		sleep 1
-	done
-}
-
 # assert_contains's opposite. Output that is empty would lack anything, so it
 # fails rather than passes.
 assert_lacks() {
@@ -180,44 +147,6 @@ assert_lacks() {
 	fi
 }
 
-# POST the upload body to empty.php, then print "<curl exit> <status> <bytes
-# sent>". Browsers send no Expect: 100-continue, and neither does this, though
-# curl would add one itself to a body over 1 MiB.
-post_upload() {
-	local tag="${1}"
-	shift
-	local out rc
-	out=$(curl -s -o /dev/null -w '%{http_code} %{size_upload}' --connect-timeout 5 --max-time 60 \
-		-H 'Expect:' "${@}" --data-binary "@${UPLOAD_BODY}" "${BASE}/backend/empty.php?acc=${tag}")
-	rc=$?
-	printf '%s %s\n' "${rc}" "${out}"
-}
-
-# The bytes the server read of one request's body, from :8080's access log,
-# which may land a moment after the response does
-bytes_read() {
-	local ctr="${1}" uri="${2}" got deadline=$((SECONDS + 5))
-	while :; do
-		got=$("${ENGINE}" logs "${ctr}" 2>/dev/null |
-			jq -Rr --arg uri "${uri}" 'fromjson? | select(.request.uri? == $uri) | .bytes_read')
-		if [[ -n "${got}" ]] || ((SECONDS >= deadline)); then
-			printf '%s' "${got:-no access log line for ${uri}}"
-			return
-		fi
-		sleep 1
-	done
-}
-
-# An upload the server stops reading half way still ends in a 200 and curl
-# exit 0, so only the byte counts on both sides show it arrived whole
-check_upload() {
-	local tag="${1}" what="${2}" rc status sent got
-	read -r rc status sent <<<"${3}"
-	assert_eq "0 200 ${UPLOAD_BYTES}" "${rc} ${status} ${sent}" "${what}: curl exit, status, bytes sent"
-	got=$(bytes_read "${CTR}" "/backend/empty.php?acc=${tag}")
-	assert_eq "${UPLOAD_BYTES}" "${got}" "${what}: bytes the server read"
-}
-
 # A dot segment in the path picks the route by the path it resolves to, and
 # then FrankenPHP picks the script to run. That must be the script the route
 # allows, known by its own answer, or there must be a refusal. A helper such
@@ -234,9 +163,6 @@ assert_runs_or_refused() {
 	400 | 404) pass "GET ${path} is refused (${status})" ;;
 	*) fail "GET ${path}: expected ${script}'s answer or a refusal, got ${status}" ;;
 	esac
-}
-assert_getip_or_refused() {
-	assert_runs_or_refused "${BASE}" "${1}" getIP.php "{\"processedString\":\"${DOTSEG_CLIENT}\",\"rawIspInfo\":\"\"}"
 }
 
 # Print a container's exit code once it has stopped, or "running" if it is
@@ -633,9 +559,8 @@ assert_health_fails() {
 }
 
 cleanup() {
-	"${ENGINE}" rm -f "${CTR}" "${INTERNAL_CTR}" "${HOSTILE_CTR}" "${BADENV_CTR}" "${RAW_ENV_CTR}" \
-		"${TEL_CTR}" "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
-	"${ENGINE}" network rm -f "${NET}" "${INTERNAL_NET}" "${PROXY_NET}" >/dev/null 2>&1 || true
+	"${ENGINE}" rm -f "${CTR}" "${TEL_CTR}" "${REFUSED_CTR}" "${PROXIED_CTR}" "${PROXY_CTR}" >/dev/null 2>&1 || true
+	"${ENGINE}" network rm -f "${NET}" "${PROXY_NET}" >/dev/null 2>&1 || true
 	"${ENGINE}" volume rm -f "${TEL_VOL}" "${PERSIST_VOL}" "${REFUSED_VOL}" "${STATS_VOL}" \
 		"${PROXIED_VOL}" "${HEALTH_VOL}" >/dev/null 2>&1 || true
 }
@@ -644,257 +569,16 @@ cleanup
 
 "${ENGINE}" network create --subnet "${NET_SUBNET}" --ip-range "${NET_RANGE}" "${NET}" >/dev/null
 
-echo '== 1. runs under the exact contract, with no volume'
+# Sections 1 to 8 are in the Go suite, in test/acceptance. Section 9
+# checks the container section 1 ran: one with no volume, which sets
+# nothing.
 "${ENGINE}" run -d --name "${CTR}" "${CONFINE[@]}" \
 	--network "${NET}" -p "${PORT}:8080" \
 	"${IMAGE}" >/dev/null
-install_probe "${CTR}"
-if wait_for_port "${BASE}/backend/getIP.php"; then
-	pass 'container serves'
-else
+if ! wait_for_port "${BASE}/backend/getIP.php"; then
 	fail 'container never served'
 	"${ENGINE}" logs "${CTR}"
 fi
-assert_status 200 '/backend/getIP.php' "${BASE}/backend/getIP.php"
-
-echo '== 2. confinement'
-# The raw /proc/self/status line carries the labels CapEff/CapPrm
-probe "${CTR}" assert-caps
-# Under --cap-drop ALL the kernel refuses to exec a binary that carries a file
-# capability, with EPERM, before a line of PHP runs. Upstream's own FrankenPHP
-# builds set cap_net_bind_service=ep.
-out=$("${ENGINE}" run --rm "${CONFINE[@]}" --network "${NET}" \
-	--entrypoint "${PHP_BIN}" "${IMAGE}" version 2>&1)
-rc=$?
-assert_eq 0 "${rc}" "${PHP_BIN} runs under --cap-drop ALL, so it carries no file capability"
-((rc == 0)) || printf '       | %s\n' "${out}" >&2
-probe "${CTR}" assert-read-only
-# What a user who passes no --user gets, which --user above cannot stand in for
-if user=$("${ENGINE}" image inspect --format '{{.Config.User}}' "${IMAGE}" 2>&1); then
-	assert_eq 65532:65532 "${user}" 'the image runs as uid/gid 65532 by default'
-else
-	fail "the image runs as uid/gid 65532 by default: ${ENGINE} image inspect failed: ${user}"
-fi
-# pcntl_exec() overlays the bootstrap process with the server
-probe "${CTR}" assert-pid1
-probe "${CTR}" assert-no-shell
-# The contract names two ports. Anything else listening, such as Caddy's
-# admin API on 127.0.0.1:2019, is an unauthenticated way in for whatever
-# shares the container's network
-probe "${CTR}" assert-listeners
-
-echo '== 3. no egress, measured from a genuinely --internal network'
-"${ENGINE}" network create --internal "${INTERNAL_NET}" >/dev/null
-"${ENGINE}" run -d --name "${INTERNAL_CTR}" "${CONFINE[@]}" \
-	--network "${INTERNAL_NET}" \
-	"${IMAGE}" >/dev/null
-install_probe "${INTERNAL_CTR}"
-
-if internal=$("${ENGINE}" network inspect "${INTERNAL_NET}" --format '{{.Internal}}'); then
-	assert_eq true "${internal}" 'test network really is internal'
-else
-	fail "test network really is internal: ${ENGINE} network inspect ${INTERNAL_NET} failed"
-fi
-
-probe "${INTERNAL_CTR}" assert-pid1 || "${ENGINE}" logs "${INTERNAL_CTR}"
-# Egress refused proves something only of a server that works where it is
-if body=$(getip_body "${INTERNAL_CTR}"); then
-	assert_eq "${GETIP_LOOPBACK}" "${body}" 'serves GET /backend/getIP.php inside the internal network'
-else
-	fail "serves GET /backend/getIP.php inside the internal network: ${body}"
-fi
-probe "${INTERNAL_CTR}" probe-egress
-
-"${ENGINE}" rm -f "${INTERNAL_CTR}" >/dev/null 2>&1
-"${ENGINE}" network rm -f "${INTERNAL_NET}" >/dev/null 2>&1
-
-echo '== 4. PHP refuses URL streams, logs real errors to stderr only and keeps bodies off /tmp'
-if ini=$("${ENGINE}" exec "${CTR}" "${PHP_BIN}" php-cli "${PROBE}" php-ini 2>&1) &&
-	jq -e 'type == "object"' >/dev/null 2>&1 <<<"${ini}"; then
-	allow_url_fopen=$(jq -r '.allow_url_fopen' <<<"${ini}")
-	display_errors=$(jq -r '.display_errors' <<<"${ini}")
-	log_errors=$(jq -r '.log_errors' <<<"${ini}")
-	error_log=$(jq -r '.error_log' <<<"${ini}")
-	error_reporting=$(jq -r '.error_reporting | join(" ")' <<<"${ini}")
-	post_max_size=$(jq -r '.post_max_size_bytes' <<<"${ini}")
-	assert_eq false "${allow_url_fopen}" 'allow_url_fopen'
-	assert_eq false "${display_errors}" 'display_errors'
-	assert_eq true "${log_errors}" 'log_errors'
-	# Unset, so PHP hands each line to FrankenPHP's logger: uid 65532 cannot
-	# open /dev/stderr, and a file would keep errors out of the container log
-	assert_eq '' "${error_log}" 'error_log is unset'
-	# Real errors and uncaught exceptions, which are E_ERROR, and nothing a
-	# client could raise by the thousand: no warning, notice or deprecation
-	assert_eq 'E_ERROR E_PARSE E_CORE_ERROR E_COMPILE_ERROR E_USER_ERROR E_RECOVERABLE_ERROR' \
-		"${error_reporting}" 'error_reporting'
-	# PHP keeps a body it reads in memory up to 16 KiB and writes the rest
-	# to /tmp. It reads none bigger than post_max_size, unless that is 0,
-	# which lifts the limit altogether.
-	if [[ "${post_max_size}" =~ ^[0-9]+$ ]] && ((post_max_size > 0 && post_max_size < 16384)); then
-		pass "post_max_size is under PHP's 16 KiB in-memory buffer (${post_max_size} bytes)"
-	else
-		fail "post_max_size: expected 1 to 16383 bytes, got '${post_max_size}'"
-	fi
-else
-	fail "php-ini printed no JSON object: ${ini}"
-fi
-# FrankenPHP logs PHP's errors as the php handler. The server's own config,
-# as the server adapts it, sends that logger to stderr and keeps it out of
-# the default log on stdout.
-if logging=$("${ENGINE}" exec "${CTR}" "${PHP_BIN}" adapt --config /etc/frankenphp/Caddyfile 2>/dev/null |
-	jq -c '.logging.logs
-            | {php: [to_entries[] | select((.value.include // []) | index("http.handlers.php")) | .value.writer.output],
-               default: .default.writer.output,
-               default_excludes_php: ((.default.exclude // []) | index("http.handlers.php") != null)}' 2>&1); then
-	assert_eq '{"php":["stderr"],"default":"stdout","default_excludes_php":true}' "${logging}" \
-		"PHP's error log goes to stderr, and the rest of the server's log to stdout"
-else
-	fail "PHP's error log goes to stderr, not stdout: could not adapt the server's Caddyfile: ${logging}"
-fi
-assert_lacks 'X-Powered-By' 'responses do not name PHP and its version' \
-	curl -s -D - -o /dev/null --max-time 5 "${BASE}/backend/getIP.php"
-
-echo '== 5. only the modern UI, its generated config and the speed test are served'
-for path in / /settings.json /server-list.json /servers.json /speedtest.js /speedtest_worker.js \
-	/stability.html /stability_worker.js /frontend/javascript/index.js; do
-	assert_status 200 "GET ${path}" "${BASE}${path}"
-done
-assert_contains 'id="privacy-warning"' 'GET / is the modern UI' curl -s --max-time 5 "${BASE}/"
-assert_lacks 'index-classic' 'GET / does not lead to the classic UI' curl -s --max-time 5 "${BASE}/"
-# Unset, TITLE, TAGLINE and GDPR_EMAIL leave upstream's own text
-assert_contains '<h1>Free and Open Source Speedtest.</h1>' "GET / keeps upstream's heading" \
-	curl -s --max-time 5 "${BASE}/"
-assert_contains '<p class="tagline">No Flash, No Java, No Websockets, No Bullsh*t</p>' \
-	"GET / keeps upstream's tagline" curl -s --max-time 5 "${BASE}/"
-for path in /index-classic.html /config.json /design-switch.js /examples/example-singleServer-basic.html \
-	/results/sanitycheck.php /backend/getIP_util.php /backend/getIP_ipInfo_apikey.php \
-	/backend/geoip2.phar /backend/country_asn.mmdb /docker/entrypoint.sh /frontend/index.html \
-	/healthz; do
-	assert_status 404 "GET ${path}" "${BASE}${path}"
-done
-# Allowed prefixes must not reach past themselves: the routes match the path
-# the file server would open, not the one the client wrote
-for path in /frontend/../backend/geoip2.phar /frontend/%2e%2e/backend/geoip2.phar \
-	/images/..%2fbackend/country_asn.mmdb; do
-	assert_status 404 "GET ${path}" --path-as-is "${BASE}${path}"
-done
-# Nor may a path that resolves onto an allowed route run some other script
-for path in /backend/getIP_util.php/../getIP.php /backend/getIP_util.php/%2e%2e/getIP.php \
-	/backend/getIP_util.php/%2E%2E/getIP.php /backend/getIP_util.php/.%2e/getIP.php \
-	/backend/getIP_ipInfo_apikey.php/../getIP.php /results/telemetry.php/../../backend/getIP.php \
-	/results/telemetry.php/%2e%2e/%2e%2e/backend/getIP.php /results/stats.php/../../backend/getIP.php \
-	/results/json.php/%2e%2e/%2e%2e/backend/getIP.php; do
-	assert_getip_or_refused "${path}"
-done
-# or reach, from an allowed one, a script the allowlist leaves out
-for path in /backend/getIP.php/../getIP_util.php /backend/getIP.php/%2e%2e/getIP_util.php \
-	/backend/getIP.php/../../results/telemetry.php /backend/empty.php/%2e%2e/%2e%2e/results/stats.php; do
-	assert_status 404 "GET ${path}" --path-as-is "${BASE}${path}"
-done
-
-echo '== 6. the speed-test endpoints and the generated config'
-download=$(curl -s -o /dev/null -w '%{http_code} %{size_download}' --max-time 30 \
-	"${BASE}/backend/garbage.php?ckSize=4")
-assert_eq '200 4194304' "${download}" 'GET /backend/garbage.php?ckSize=4: status, bytes'
-upload=$(post_upload 6-typed -H 'Content-Type: application/octet-stream')
-check_upload 6-typed 'POST /backend/empty.php, 20 MiB of application/octet-stream' "${upload}"
-# XMLHttpRequest sends speedtest_worker.js's untyped Blob with no Content-Type
-upload=$(post_upload 6-untyped -H 'Content-Type:')
-check_upload 6-untyped 'POST /backend/empty.php, 20 MiB with no Content-Type, as browsers send it' "${upload}"
-if body=$(getip_body "${CTR}"); then
-	assert_eq "${GETIP_LOOPBACK}" "${body}" 'GET /backend/getIP.php over loopback'
-else
-	fail "GET /backend/getIP.php over loopback: ${body}"
-fi
-# Answered from the bundled mmdb through the phar: there is no egress
-isp=$(curl -s -w '\n%{http_code}' --max-time 5 -H 'X-Forwarded-For: 1.1.1.1' "${BASE}/backend/getIP.php?isp")
-assert_eq 200 "${isp##*$'\n'}" 'GET /backend/getIP.php?isp for X-Forwarded-For 1.1.1.1'
-processed=$(jq -r '.processedString' 2>&1 <<<"${isp%$'\n'*}")
-if [[ "${processed}" == *Cloudflare* || "${processed}" == *AS13335* ]]; then
-	pass "1.1.1.1 resolves to Cloudflare (${processed})"
-else
-	fail "1.1.1.1 resolves to Cloudflare: got '${processed}'"
-fi
-list=$(curl -s --max-time 5 "${BASE}/server-list.json")
-if jq -e 'type == "array" and length == 1' >/dev/null 2>&1 <<<"${list}"; then
-	pass 'server-list.json is a one-element array'
-else
-	fail "server-list.json is a one-element array: got '${list}'"
-fi
-assert_lacks '://' 'server-list.json holds no absolute URL' printf '%s' "${list}"
-servers=$(curl -s --max-time 5 "${BASE}/servers.json")
-if [[ -n "${list}" && "${servers}" == "${list}" ]]; then
-	pass 'servers.json is the same list'
-else
-	fail "servers.json is the same list: got '${servers}'"
-fi
-settings=$(curl -s --max-time 5 "${BASE}/settings.json")
-telemetry_level=$(jq -r '.telemetry_level' 2>&1 <<<"${settings}")
-test_order=$(jq -r '.test_order' 2>&1 <<<"${settings}")
-assert_eq off "${telemetry_level}" 'settings.json telemetry_level'
-assert_eq ID_U_P "${test_order}" "settings.json keeps upstream's test_order"
-
-echo "== 7. three parallel uploads within --tmpfs /tmp:size=${TMPFS_SIZE}"
-for i in 1 2 3; do
-	post_upload "7-${i}" -H 'Content-Type: application/octet-stream' >"${WORK}/upload-${i}" &
-done
-wait
-for i in 1 2 3; do
-	check_upload "7-${i}" "parallel upload ${i} of 3" "$(<"${WORK}/upload-${i}")"
-done
-assert_status 200 '/backend/getIP.php after the uploads' "${BASE}/backend/getIP.php"
-
-echo '== 8. hostile TITLE, TAGLINE and GDPR_EMAIL render escaped; bad bytes or a bad TELEMETRY stop the start'
-"${ENGINE}" run -d --name "${HOSTILE_CTR}" "${CONFINE[@]}" \
-	--network "${NET}" -p "${HOSTILE_PORT}:8080" \
-	-e "TITLE=Tést <b>&'\"" -e 'TAGLINE=<script>x</script>' -e 'GDPR_EMAIL=a@b.example' \
-	"${IMAGE}" >/dev/null
-if ! wait_for_port "${HOSTILE_BASE}/"; then
-	fail 'the container with hostile values never served'
-	"${ENGINE}" logs "${HOSTILE_CTR}"
-fi
-page=$(curl -s --max-time 5 "${HOSTILE_BASE}/")
-# htmlspecialchars(..., ENT_QUOTES | ENT_HTML5, 'UTF-8')
-title='Tést &lt;b&gt;&amp;&apos;&quot;'
-assert_contains "<title>${title} - Free and Open Source Speedtest</title>" 'TITLE in <title>, escaped' \
-	printf '%s' "${page}"
-assert_contains "<h1>${title}</h1>" 'TITLE in <h1>, escaped' printf '%s' "${page}"
-assert_contains '<p class="tagline">&lt;script&gt;x&lt;/script&gt;</p>' 'TAGLINE, escaped' \
-	printf '%s' "${page}"
-assert_lacks '<b>' 'no raw <b>' printf '%s' "${page}"
-assert_lacks '<script>x' 'no raw <script>x' printf '%s' "${page}"
-assert_contains 'href="mailto:a@b.example"' 'GDPR_EMAIL in the mailto: link' printf '%s' "${page}"
-assert_contains '>a@b.example</a>' "GDPR_EMAIL in place of upstream's placeholder text" printf '%s' "${page}"
-assert_lacks 'PUT@YOUR_EMAIL.HERE' "no upstream placeholder address" printf '%s' "${page}"
-"${ENGINE}" run -d --name "${BADENV_CTR}" "${CONFINE[@]}" --network "${NET}" \
-	-e TELEMETRY=maybe "${IMAGE}" >/dev/null
-exit_code=$(exit_code_within "${BADENV_CTR}" 30)
-assert_eq 1 "${exit_code}" 'TELEMETRY=maybe: the container exits'
-assert_contains TELEMETRY 'TELEMETRY=maybe: the log names TELEMETRY' "${ENGINE}" logs "${BADENV_CTR}"
-# htmlspecialchars() makes '' of text that is not UTF-8, which would empty
-# the title or the heading without a word. No engine's -e can carry such
-# bytes, so the probe runs the bootstrap with them, in a container that only
-# sleeps and so has nothing written yet.
-"${ENGINE}" run -d --name "${RAW_ENV_CTR}" "${CONFINE[@]}" --network none \
-	--entrypoint "${PHP_BIN}" "${IMAGE}" php-cli -r 'sleep(600);' >/dev/null
-install_probe "${RAW_ENV_CTR}"
-for name in TITLE TAGLINE GDPR_EMAIL; do
-	# Latin-1 for "été"
-	out=$("${ENGINE}" exec "${RAW_ENV_CTR}" "${PHP_BIN}" php-cli "${PROBE}" bootstrap-with \
-		"{\"${name}\":\"e974e9\"}" 2>&1)
-	code=$(jq -r '.exit' 2>&1 <<<"${out}")
-	assert_eq 1 "${code}" "${name} in Latin-1: the bootstrap exits"
-	assert_contains "${name} is not valid UTF-8" "${name} in Latin-1: it says so" printf '%s' "${out}"
-done
-# The same word in UTF-8 passes, and the start stops at the next problem
-out=$("${ENGINE}" exec "${RAW_ENV_CTR}" "${PHP_BIN}" php-cli "${PROBE}" bootstrap-with \
-	'{"TITLE":"c3a974c3a9","TRUSTED_PROXIES":"6e6f742d612d63696472"}' 2>&1)
-assert_contains "TRUSTED_PROXIES holds 'not-a-cidr'" 'TITLE in UTF-8 passes, and the start goes on' \
-	printf '%s' "${out}"
-assert_lacks 'UTF-8' 'TITLE in UTF-8 is not refused' printf '%s' "${out}"
-written=$(php_in "${RAW_ENV_CTR}" 'echo is_dir("/tmp/librespeed") ? "present" : "absent";')
-assert_eq absent "${written}" 'every refusal came before the bootstrap wrote anything'
-"${ENGINE}" rm -f "${RAW_ENV_CTR}" >/dev/null 2>&1
 
 echo '== 9. telemetry off, the default: no results routes, no volume, its switches ignored'
 # The container from section 1, which has no volume and sets nothing
@@ -1526,14 +1210,6 @@ start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081" "${HEALTH_ARGS[@]}" -v "${HEA
 assert_health_fails 'with allow_url_fopen and display_errors on, and log_errors off' ini
 assert_eq 'ini: allow_url_fopen is on, display_errors is on, log_errors is off' "${HEALTHZ_BODY}" \
 	'the three settings, on one line, and no other check failed'
-"${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
-
-echo '== 19. the health port serves nothing else, and :8080 has no /healthz'
-start_served "${TEL_CTR}" -p "${HEALTH_PORT}:8081"
-for path in / /backend/getIP.php /index.php; do
-	assert_status 404 "GET :8081${path}" "${HEALTH_BASE}${path}"
-done
-assert_status 404 'GET :8080/healthz' "${TEL_BASE}/healthz"
 "${ENGINE}" rm -f "${TEL_CTR}" >/dev/null 2>&1
 
 echo

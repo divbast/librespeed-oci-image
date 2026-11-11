@@ -13,25 +13,15 @@ declare(strict_types=1);
  *     ok<TAB>what<TAB>expected<TAB>found
  *     FAIL<TAB>what<TAB>expected<TAB>found
  *
- * php-ini, probe-getip, read-salt, read-row, http-request,
- * http-request-locked, lock-holders, hold-db-lock and bootstrap-with are the
- * exceptions: they print what they read or do, and assert nothing.
+ * php-ini, read-salt, read-row, http-request, http-request-locked,
+ * lock-holders and hold-db-lock are the exceptions: they print what they read
+ * or do, and assert nothing.
+ *
+ * The Go suite in test/acceptance runs what sections 1 to 8 ran, with
+ * divbast's own probe and test/probe/app.php. This keeps what the sections
+ * still in test/acceptance.sh run.
  */
 
-/**
- * The ones most likely to be the target of an intrusion.
- */
-const FORBIDDEN_SHELLS = ['/bin/sh', '/bin/bash', '/bin/dash'];
-
-const NO_CAPABILITIES = '0000000000000000';
-const EGRESS_PROBE_HOST = '9.9.9.9';
-const EGRESS_PROBE_PORT = 443;
-const EGRESS_PROBE_TIMEOUT = 3;
-const ROOT_WRITE_PROBE = '/.librespeed-write-probe';
-const READ_ONLY_ERROR = 'Read-only file system';
-const LOOPBACK_HOST = '127.0.0.1';
-const LOOPBACK_PORT = 8080;
-const LOOPBACK_TIMEOUT = 5;
 const TELEMETRY_DB = '/data/telemetry.db';
 const SALT_FILE = '/data/idObfuscation_salt.php';
 // The first bytes of every SQLite database file
@@ -47,20 +37,6 @@ const PROC_LOCKS = '/proc/locks';
 const HTTP_TIMEOUT = 10;
 // An HTTP field name is a token: RFC 9110, section 5.6.2
 const HEADER_LINE = '/\A[!#$%&\'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*\z/';
-// Every TCP socket in the container's network namespace, one per line after
-// a header
-const TCP_TABLES = ['/proc/net/tcp', '/proc/net/tcp6'];
-// sl, local address:port and remote address:port in hex, the state, which is
-// 0A for a listening socket, then five columns, then the socket's inode
-const TCP_SOCKET = '/\A\s*\d+:\s+[0-9A-Fa-f]+:([0-9A-Fa-f]{4})\s+[0-9A-Fa-f]+:[0-9A-Fa-f]{4}\s+([0-9A-Fa-f]{2})(?:\s+\S+){5}\s+(\d+)\s/';
-const TCP_LISTEN = '0A';
-// The speed test and the health endpoint, and nothing else
-const CONTRACT_PORTS = '8080 8081';
-const SERVER_BIN = '/usr/local/bin/frankenphp';
-const BOOTSTRAP = '/usr/local/bin/librespeed-bootstrap';
-// Long enough for a bootstrap to refuse; one still running by then has
-// started the server
-const BOOTSTRAP_DEADLINE = 10;
 
 /**
  * Every error level PHP 8.5 still raises, by bit. E_STRICT is gone: its
@@ -134,153 +110,6 @@ function readOrThrow(string $path): string
 
 // --- subcommands ------------------------------------------------------------
 
-function assertPid1(): void
-{
-    Assertions::equals('PID 1 comm', 'frankenphp', trim(readOrThrow('/proc/1/comm')));
-}
-
-/**
- * Extract capability mask from /proc/self/status as a value.
- */
-function capabilityMask(string $status, string $field): string
-{
-    $pattern = '/^' . preg_quote($field, '/') . ':[ \t]*([0-9a-fA-F]+)[ \t]*$/m';
-
-    if (preg_match($pattern, $status, $matches) !== 1) {
-        throw new RuntimeException("/proc/self/status has no well-formed $field line");
-    }
-
-    return $matches[1];
-}
-
-function assertCaps(): void
-{
-    $status = readOrThrow('/proc/self/status');
-
-    foreach (['CapEff', 'CapPrm'] as $field) {
-        $mask = capabilityMask($status, $field);
-        Assertions::record(
-            hexdec($mask) === 0,
-            "$field, every capability bit clear",
-            NO_CAPABILITIES,
-            $mask,
-        );
-    }
-}
-
-function assertNoShell(): void
-{
-    foreach (FORBIDDEN_SHELLS as $path) {
-        clearstatcache(true, $path);
-        $present = file_exists($path) || is_link($path);
-
-        Assertions::record(
-            !$present,
-            "$path is absent from the image",
-            'absent',
-            $present ? 'present' : 'absent',
-        );
-    }
-}
-
-/**
- * The kernel answers a create on a read-only mount with EROFS before it
- * checks permissions on the directory, so the error names the mount. A root
- * that was merely owned by root would answer "Permission denied" instead,
- * and this would fail.
- */
-function assertReadOnly(): void
-{
-    error_clear_last();
-    $written = @file_put_contents(ROOT_WRITE_PROBE, "probe\n");
-    $error = error_get_last()['message'] ?? 'no error';
-
-    if ($written !== false) {
-        @unlink(ROOT_WRITE_PROBE);
-    }
-
-    Assertions::record(
-        $written === false && str_contains($error, READ_ONLY_ERROR),
-        'writing ' . ROOT_WRITE_PROBE . ' fails because / is read-only',
-        READ_ONLY_ERROR,
-        $written === false ? $error : "wrote $written bytes",
-    );
-}
-
-/**
- * Measures from inside the container.
- */
-function probeEgress(): void
-{
-    $errno = 0;
-    $errstr = '';
-    $socket = @fsockopen(
-        EGRESS_PROBE_HOST,
-        EGRESS_PROBE_PORT,
-        $errno,
-        $errstr,
-        EGRESS_PROBE_TIMEOUT,
-    );
-
-    $connected = $socket !== false;
-    if ($socket !== false) {
-        fclose($socket);
-    }
-
-    Assertions::record(
-        !$connected,
-        'outbound TCP to ' . EGRESS_PROBE_HOST . ':' . EGRESS_PROBE_PORT . ' is refused',
-        'no connection',
-        $connected ? 'CONNECTED' : sprintf('no connection (errno %d: %s)', $errno, $errstr),
-    );
-}
-
-/**
- * The inode of every socket a process in the container holds open
- *
- * @return array<int, true>
- */
-function heldSockets(): array
-{
-    $held = [];
-    foreach (glob('/proc/[0-9]*/fd/*') ?: [] as $fd) {
-        $target = @readlink($fd);
-        if (is_string($target) && preg_match('/\Asocket:\[(\d+)\]\z/', $target, $socket) === 1) {
-            $held[(int) $socket[1]] = true;
-        }
-    }
-
-    return $held;
-}
-
-/**
- * Every port a process in the container listens on, from the kernel's own
- * tables, so a listener no process advertises is counted too. Only sockets
- * a process here holds count: Docker's resolver for a user-defined network
- * listens in the same namespace, at 127.0.0.11 on a port of its own, but
- * from outside the container. If no descriptor could be read, nothing
- * counts, and the two ports the contract names are missing.
- */
-function assertListeners(): void
-{
-    $held = heldSockets();
-    $ports = [];
-    foreach (TCP_TABLES as $table) {
-        foreach (array_slice(explode("\n", trim(readOrThrow($table))), 1) as $line) {
-            if (preg_match(TCP_SOCKET, $line, $socket) !== 1) {
-                throw new RuntimeException("$table has a line that is not a socket: $line");
-            }
-            if (strtoupper($socket[2]) === TCP_LISTEN && isset($held[(int) $socket[3]])) {
-                $ports[] = (int) hexdec($socket[1]);
-            }
-        }
-    }
-    $ports = array_unique($ports);
-    sort($ports);
-
-    Assertions::equals('TCP ports a process in the container listens on', CONTRACT_PORTS, implode(' ', $ports));
-}
-
 /**
  * How PHP itself reads a boolean directive: on, yes and true, or else the
  * number the value starts with. display_errors also takes stderr and stdout,
@@ -330,46 +159,6 @@ function phpIni(): void
         // In bytes, as PHP reads the K, M and G suffixes
         'post_max_size_bytes' => ini_parse_quantity($postMaxSize),
     ], JSON_THROW_ON_ERROR) . "\n");
-}
-
-/**
- * Prints the body of GET /backend/getIP.php as the server answers it over
- * loopback. allow_url_fopen is off for this SAPI too, so it speaks HTTP over
- * a bare socket. HTTP/1.0 keeps the answer unchunked, ending where the
- * server closes the connection.
- */
-function probeGetIp(): void
-{
-    $errno = 0;
-    $errstr = '';
-    $socket = @fsockopen(LOOPBACK_HOST, LOOPBACK_PORT, $errno, $errstr, LOOPBACK_TIMEOUT);
-    if ($socket === false) {
-        throw new RuntimeException(sprintf(
-            'cannot connect to %s:%d (errno %d: %s)',
-            LOOPBACK_HOST,
-            LOOPBACK_PORT,
-            $errno,
-            $errstr,
-        ));
-    }
-
-    stream_set_timeout($socket, LOOPBACK_TIMEOUT);
-    $request = "GET /backend/getIP.php HTTP/1.0\r\nHost: " . LOOPBACK_HOST . ':' . LOOPBACK_PORT . "\r\n\r\n";
-    $sent = fwrite($socket, $request);
-    $response = stream_get_contents($socket);
-    fclose($socket);
-
-    if ($sent !== strlen($request) || $response === false) {
-        throw new RuntimeException('the exchange with ' . LOOPBACK_HOST . ':' . LOOPBACK_PORT . ' broke off');
-    }
-
-    $parts = explode("\r\n\r\n", $response, 2);
-    $statusLine = strtok($parts[0], "\r\n");
-    if (!isset($parts[1]) || $statusLine === false || preg_match('#^HTTP/\d\.\d 200 #', $statusLine) !== 1) {
-        throw new RuntimeException('expected a 200 response, got: ' . ($statusLine === false ? 'nothing' : $statusLine));
-    }
-
-    fwrite(STDOUT, $parts[1]);
 }
 
 /**
@@ -644,63 +433,6 @@ function holdDbLock(string $seconds): void
     fwrite(STDOUT, "released\n");
 }
 
-/**
- * Runs the bootstrap with each name in the JSON object set to the bytes its
- * hex value spells, which need not be UTF-8. An engine's -e cannot carry
- * such bytes: Docker sends the environment as JSON, which puts U+FFFD in
- * their place. Prints the exit code, or null if the bootstrap was still
- * running at the deadline and so was stopped, and what it wrote to stderr.
- */
-function bootstrapWith(string $assignments): void
-{
-    $values = json_decode($assignments, true, 2, JSON_THROW_ON_ERROR);
-    if (!is_array($values)) {
-        throw new RuntimeException('expected a JSON object of names and hex values');
-    }
-    $env = getenv();
-    foreach ($values as $name => $hex) {
-        $bytes = is_string($name) && is_string($hex) ? hex2bin($hex) : false;
-        if ($bytes === false) {
-            throw new RuntimeException("'$name' needs a name and an even run of hex digits");
-        }
-        $env[$name] = $bytes;
-    }
-
-    $process = proc_open(
-        [SERVER_BIN, 'php-cli', BOOTSTRAP],
-        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']],
-        $pipes,
-        null,
-        $env,
-    );
-    if (!is_resource($process)) {
-        throw new RuntimeException('cannot start ' . BOOTSTRAP);
-    }
-    stream_set_blocking($pipes[2], false);
-    $stderr = '';
-    $deadline = microtime(true) + BOOTSTRAP_DEADLINE;
-    do {
-        $stderr .= (string) stream_get_contents($pipes[2]);
-        // exitcode is good only on the first call that finds it stopped
-        $status = proc_get_status($process);
-        if (!$status['running']) {
-            break;
-        }
-        usleep(100_000);
-    } while (microtime(true) < $deadline);
-    if ($status['running']) {
-        proc_terminate($process);
-    }
-    $stderr .= (string) stream_get_contents($pipes[2]);
-    fclose($pipes[2]);
-    proc_close($process);
-
-    echo json_encode(
-        ['exit' => $status['running'] ? null : $status['exitcode'], 'stderr' => $stderr],
-        JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES,
-    ), "\n";
-}
-
 // --- dispatch ---------------------------------------------------------------
 
 /**
@@ -709,14 +441,7 @@ function bootstrapWith(string $assignments): void
 function commands(): array
 {
     return [
-        'assert-pid1' => ['arguments' => [], 'handler' => assertPid1(...)],
-        'assert-caps' => ['arguments' => [], 'handler' => assertCaps(...)],
-        'assert-no-shell' => ['arguments' => [], 'handler' => assertNoShell(...)],
-        'assert-read-only' => ['arguments' => [], 'handler' => assertReadOnly(...)],
-        'assert-listeners' => ['arguments' => [], 'handler' => assertListeners(...)],
-        'probe-egress' => ['arguments' => [], 'handler' => probeEgress(...)],
         'php-ini' => ['arguments' => [], 'handler' => phpIni(...)],
-        'probe-getip' => ['arguments' => [], 'handler' => probeGetIp(...)],
         'damage-db' => ['arguments' => [], 'handler' => damageDb(...)],
         'remove-db' => ['arguments' => [], 'handler' => removeDb(...)],
         'read-salt' => ['arguments' => [], 'handler' => readSalt(...)],
@@ -733,7 +458,6 @@ function commands(): array
         'lock-holders' => ['arguments' => ['path'], 'handler' => lockHolders(...)],
         'write-stats-hash' => ['arguments' => ['password', 'cost'], 'handler' => writeStatsHash(...)],
         'hold-db-lock' => ['arguments' => ['seconds'], 'handler' => holdDbLock(...)],
-        'bootstrap-with' => ['arguments' => ['assignments'], 'handler' => bootstrapWith(...)],
     ];
 }
 

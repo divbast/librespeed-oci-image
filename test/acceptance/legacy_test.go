@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // SPDX-FileCopyrightText: 2026 Aryan Ameri <github@aryan.ameri.coffee>
 
-// Package acceptance runs the acceptance suite against the image IMAGE
-// names, under the engine ENGINE names, docker unless it says podman.
 package acceptance
 
 import (
