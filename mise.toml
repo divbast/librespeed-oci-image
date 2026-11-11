@@ -12,8 +12,6 @@
 "pipx:reuse" = "6.3.0"
 "aqua:casey/just" = "1.59.0"
 
-"aqua:jqlang/jq" = "1.8.2"
-
 "aqua:suzuki-shunsuke/pinact" = "5.0.2"
 "aqua:aquasecurity/trivy" = "0.76.2"
 "aqua:zizmorcore/zizmor" = "1.32.0"

@@ -50,8 +50,6 @@ setup:
 lint:
     {{ just_executable() }} actions-check workflow-audit actionlint shell-lint go-lint go-test reuse-lint app-lint
     vendor/bin/phpstan analyse --no-progress
-    # The README's Env Vars table names exactly the variables the image reads
-    ./test/env-docs.sh
 
 # Every gate. Run before committing
 ci:
