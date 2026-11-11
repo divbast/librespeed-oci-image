@@ -17,7 +17,7 @@ func TestServesWithNoVolume(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 
-	s, err := start(t, e, image, portNoData, nil)
+	s, err := start(t, e, image, spec{port: portNoData})
 	if err != nil {
 		t.Fatal(err)
 	}

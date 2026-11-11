@@ -14,7 +14,7 @@ import (
 func TestRoutes(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portRoutes, nil)
+	s := serve(t, e, image, spec{port: portRoutes})
 
 	tests := []struct {
 		path string

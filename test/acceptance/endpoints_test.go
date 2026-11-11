@@ -23,7 +23,7 @@ const garbageBytes = 4 * 1048576
 func TestSpeedTestEndpoints(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portEndpoints, nil)
+	s := serve(t, e, image, spec{port: portEndpoints})
 
 	t.Run("download", func(t *testing.T) {
 		t.Parallel()

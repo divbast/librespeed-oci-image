@@ -53,7 +53,7 @@ func value[T any](v *T) string {
 func TestPHPSettings(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portINI, nil)
+	s := serve(t, e, image, spec{port: portINI})
 	checks := harness.NewChecks(t)
 
 	if ini, err := readINI(t, s); err != nil {
@@ -84,12 +84,14 @@ func TestPHPSettings(t *testing.T) {
 
 	// FrankenPHP logs PHP's errors as the php handler. The server's own
 	// config, as the server adapts it, sends that logger to stderr and
-	// keeps it out of the default log on stdout.
+	// keeps it out of the default log on stdout, where the speed test's
+	// access log goes too: the upload checks read the bytes the server
+	// took from it, as an operator reading stdout would.
 	const logging = "PHP's error log goes to stderr, and the rest of the server's log to stdout"
 	if got, err := serverLogging(t, s); err != nil {
 		checks.True(logging, false, err.Error())
 	} else {
-		harness.Equal(checks, logging, `{"php":["stderr"],"default":"stdout","default_excludes_php":true}`, got)
+		harness.Equal(checks, logging, `{"php":["stderr"],"default":"stdout","default_excludes_php":true,"access":["stdout"]}`, got)
 	}
 
 	const unnamed = "responses do not name PHP and its version"
@@ -119,8 +121,8 @@ func readINI(t *testing.T, s *served) (phpINI, error) {
 }
 
 // serverLogging returns, as JSON, where the running server's own config
-// sends PHP's log and the default log, and whether the default leaves
-// PHP's out.
+// sends PHP's log and the default log, whether the default leaves PHP's
+// out, and where the speed test's own access log goes.
 func serverLogging(t *testing.T, s *served) (string, error) {
 	t.Helper()
 	res, err := s.c.Exec(t.Context(), nil, harness.FrankenPHP, "adapt", "--config", "/etc/frankenphp/Caddyfile")
@@ -141,6 +143,16 @@ func serverLogging(t *testing.T, s *served) (string, error) {
 		Logging struct {
 			Logs map[string]logger `json:"logs"`
 		} `json:"logging"`
+		Apps struct {
+			HTTP struct {
+				Servers map[string]struct {
+					Listen []string `json:"listen"`
+					Logs   *struct {
+						DefaultLoggerName string `json:"default_logger_name"`
+					} `json:"logs"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
 	}
 	if err = json.Unmarshal(res.Stdout, &adapted); err != nil {
 		return "", fmt.Errorf("the adapted Caddyfile is not JSON: %w", err)
@@ -152,10 +164,22 @@ func serverLogging(t *testing.T, s *served) (string, error) {
 		PHP                []string `json:"php"`
 		Default            string   `json:"default"`
 		DefaultExcludesPHP bool     `json:"default_excludes_php"`
+		Access             []string `json:"access"`
+	}
+	// A site's log block names a logger, which takes that site's access
+	// log alone
+	var access []string
+	for _, srv := range adapted.Apps.HTTP.Servers {
+		if slices.Contains(srv.Listen, fmt.Sprintf(":%d", appPort)) && srv.Logs != nil {
+			access = append(access, "http.log.access."+srv.Logs.DefaultLoggerName)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(logs)) {
 		if slices.Contains(logs[name].Include, php) {
 			where.PHP = append(where.PHP, logs[name].Writer.Output)
+		}
+		if slices.ContainsFunc(access, func(a string) bool { return slices.Contains(logs[name].Include, a) }) {
+			where.Access = append(where.Access, logs[name].Writer.Output)
 		}
 	}
 	where.Default = logs["default"].Writer.Output

@@ -24,10 +24,8 @@ func libreSpeed(image string, ready func(context.Context, *harness.Container) er
 		AppPort:    appPort,
 		HealthPort: healthPort,
 		TmpfsSize:  tmpfsSize,
-		// What the bootstrap hands over to, with pcntl_exec(SERVER_BIN,
-		// ['run', '--config', CADDYFILE])
-		PID1:      []string{harness.FrankenPHP, "run", "--config", "/etc/frankenphp/Caddyfile"},
-		HealthCmd: healthCmd,
+		PID1:       serverArgv,
+		HealthCmd:  healthCmd,
 		Healthcheck: contract.Healthcheck{
 			Test:        slices.Concat([]string{"CMD"}, healthCmd),
 			Interval:    30 * time.Second,

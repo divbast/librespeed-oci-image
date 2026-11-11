@@ -13,11 +13,11 @@ import (
 func TestHostileValuesRenderEscaped(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portHostile, map[string]string{
+	s := serve(t, e, image, spec{port: portHostile, env: map[string]string{
 		"TITLE":      `Tést <b>&'"`,
 		"TAGLINE":    "<script>x</script>",
 		"GDPR_EMAIL": "a@b.example",
-	})
+	}})
 
 	page := string(fetch(t, s, "/"))
 	// htmlspecialchars(..., ENT_QUOTES | ENT_HTML5, 'UTF-8')

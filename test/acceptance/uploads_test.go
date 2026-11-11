@@ -38,7 +38,7 @@ type uploaded struct {
 func TestUploads(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portUploads, nil)
+	s := serve(t, e, image, spec{port: portUploads})
 
 	for _, tt := range []struct {
 		tag, what, contentType string
@@ -58,7 +58,7 @@ func TestUploads(t *testing.T) {
 func TestParallelUploads(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portParallelUploads, nil)
+	s := serve(t, e, image, spec{port: portParallelUploads})
 
 	results := make([]uploaded, 3)
 	var wg sync.WaitGroup

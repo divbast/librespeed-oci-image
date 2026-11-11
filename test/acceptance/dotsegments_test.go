@@ -24,7 +24,7 @@ const dotSegmentClient = "203.0.113.9"
 func TestDotSegments(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, portDotSegments, nil)
+	s := serve(t, e, image, spec{port: portDotSegments})
 
 	// The routes match the path the file server would open, not the one
 	// the client wrote; and neither reaches a script the allowlist leaves
