@@ -22,7 +22,7 @@ import (
 // fail it.
 const uploadBytes = 20 * 1048576
 
-// uploadWithin bounds one upload, as the bash suite's curl did.
+// uploadWithin bounds one upload.
 const uploadWithin = time.Minute
 
 // uploaded is how one upload went: the status that came back and the

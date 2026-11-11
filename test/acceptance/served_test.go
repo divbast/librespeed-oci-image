@@ -40,8 +40,8 @@ var serverArgv = []string{harness.FrankenPHP, "run", "--config", "/etc/frankenph
 // it and a Podman user passes it with --health-cmd.
 var healthCmd = []string{harness.FrankenPHP, "php-cli", "/usr/local/bin/librespeed-health"}
 
-// serveWithin bounds how long a container may take to serve, as the bash
-// suite bounded it, and attemptWithin each request while it waits.
+// serveWithin bounds how long a container may take to serve, and
+// attemptWithin each request while it waits.
 const (
 	serveWithin   = time.Minute
 	attemptWithin = 5 * time.Second
