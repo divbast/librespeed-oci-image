@@ -7,7 +7,7 @@
 # asserts the tag still names it.
 ARG LIBRESPEED_VERSION=6.3.1
 ARG LIBRESPEED_COMMIT=a820d7cdf1fea13592809966ba845e68efff7ef9
-ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab
+ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2
 
 FROM debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS fetch
 ARG LIBRESPEED_VERSION
