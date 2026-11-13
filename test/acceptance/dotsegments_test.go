@@ -24,7 +24,7 @@ const dotSegmentClient = "203.0.113.9"
 func TestDotSegments(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portDotSegments})
+	s := serve(t, e, image, spec{})
 
 	// The routes match the path the file server would open, not the one
 	// the client wrote; and neither reaches a script the allowlist leaves
@@ -41,7 +41,7 @@ func TestDotSegments(t *testing.T) {
 		what := "GET " + path
 		t.Run(what, func(t *testing.T) {
 			t.Parallel()
-			statusIs(t, s, what, http.StatusNotFound, path)
+			harness.StatusIs(t, s, what, http.StatusNotFound, path)
 		})
 	}
 
@@ -70,19 +70,19 @@ func TestDotSegments(t *testing.T) {
 // runsOrRefused checks GET path, sent exactly as written, either runs
 // script, known by its answer, want, or is refused with a 400 or 404. Its
 // name says which it saw.
-func runsOrRefused(t *testing.T, s *served, path, script, want string) {
+func runsOrRefused(t *testing.T, s *harness.Serving, path, script, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	runs := fmt.Sprintf("GET %s runs %s", path, script)
-	resp, err := s.get(t.Context(), path, http.Header{"X-Forwarded-For": {dotSegmentClient}})
+	resp, err := s.Get(t.Context(), path, http.Header{"X-Forwarded-For": {dotSegmentClient}})
 	switch {
 	case err != nil:
 		checks.True(runs, false, err.Error())
-	case resp.status == http.StatusOK:
-		harness.Equal(checks, runs, want, string(resp.body))
-	case resp.status == http.StatusBadRequest || resp.status == http.StatusNotFound:
-		checks.True(fmt.Sprintf("GET %s is refused", path), true, strconv.Itoa(resp.status))
+	case resp.Status == http.StatusOK:
+		harness.Equal(checks, runs, want, string(resp.Body))
+	case resp.Status == http.StatusBadRequest || resp.Status == http.StatusNotFound:
+		checks.True(fmt.Sprintf("GET %s is refused", path), true, strconv.Itoa(resp.Status))
 	default:
-		checks.True(runs, false, fmt.Sprintf("got %d, which is neither %s's answer nor a refusal", resp.status, script))
+		checks.True(runs, false, fmt.Sprintf("got %d, which is neither %s's answer nor a refusal", resp.Status, script))
 	}
 }

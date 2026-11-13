@@ -5,21 +5,16 @@ package acceptance
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/divbast/ci/harness"
 	"github.com/divbast/librespeed-oci-image/test/probe"
-)
-
-// The network a server and its proxy run on, which the server trusts, and
-// their addresses there.
-const (
-	proxySubnet = "10.89.77.0/24"
-	proxiedIP   = "10.89.77.10"
-	proxyIP     = "10.89.77.20"
 )
 
 // TestTrustedProxies checks a server behind a proxy TRUSTED_PROXIES names
@@ -52,7 +47,8 @@ func TestTrustedProxies(t *testing.T) {
 	} {
 		t.Run(tt.what, func(t *testing.T) {
 			t.Parallel()
-			refuses(t, e, image, tt.what, "TRUSTED_PROXIES holds "+tt.holds, refusal{env: map[string]string{"TRUSTED_PROXIES": tt.value}})
+			harness.Refuses(t, e, refusing(image, map[string]string{"TRUSTED_PROXIES": tt.value}), refusedExit,
+				tt.what, "TRUSTED_PROXIES holds "+tt.holds)
 		})
 	}
 
@@ -60,12 +56,12 @@ func TestTrustedProxies(t *testing.T) {
 		t.Parallel()
 		// What global.caddy holds is each address as PHP writes it, never
 		// the variable's own text
-		s := serve(t, e, image, spec{port: portProxyList, env: map[string]string{
+		s := serve(t, e, image, spec{env: map[string]string{
 			"TRUSTED_PROXIES": " 10.89.77.0/24,,2001:DB8::/32  192.0.2.1 ",
 		}})
 		const what = "a list with commas, spaces and capitals, as written to global.caddy"
 		checks := harness.NewChecks(t)
-		global, err := generated(t.Context(), s.c, "caddy/global.caddy")
+		global, err := generated(t.Context(), s.C, "caddy/global.caddy")
 		if err != nil {
 			checks.True(what, false, err.Error())
 			return
@@ -82,31 +78,36 @@ func TestTrustedProxies(t *testing.T) {
 
 // behindProxy runs the server, and a second container of the same image in
 // front of it as its proxy, so the suite needs no other image, on a
-// network whose addresses the server trusts. Every login goes from the
-// proxy to the server, with the X-Forwarded-For a proxy would send.
+// network of their own. The engine picks the network's subnet, so the
+// proxy starts first, and the server trusts the address it drew, as the
+// range of that one address. Every login goes from the proxy to the
+// server, with the X-Forwarded-For a proxy would send.
 func behindProxy(t *testing.T, e harness.Engine, image string) {
 	t.Helper()
 	ctx := t.Context()
 	checks := harness.NewChecks(t)
-	network := newNetwork(t, e, proxySubnet)
-	env := statsOn()
-	env["TRUSTED_PROXIES"] = proxySubnet
-	server, err := e.Start(ctx, t, &harness.RunSpec{
+	network := newNetwork(t, e)
+	proxy, err := e.Start(ctx, t, &harness.RunSpec{
 		Image:   image,
 		Network: network,
-		IP:      proxiedIP,
 		Confine: harness.Contract(tmpfsSize),
-		Env:     env,
-		Mounts:  []harness.Mount{{Source: newVolume(t, e), Target: dataDir, Volume: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := e.Start(ctx, t, &harness.RunSpec{
+	proxyAddr, err := netip.ParseAddr(addressOf(t, proxy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := netip.PrefixFrom(proxyAddr, proxyAddr.BitLen()).String()
+	env := statsOn()
+	env["TRUSTED_PROXIES"] = trusted
+	server, err := e.Start(ctx, t, &harness.RunSpec{
 		Image:   image,
 		Network: network,
-		IP:      proxyIP,
 		Confine: harness.Contract(tmpfsSize),
+		Env:     env,
+		Mounts:  onData(newVolume(t, e)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,25 +116,26 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := fmt.Sprintf("http://%s:%d", proxiedIP, appPort)
+	base := "http://" + net.JoinHostPort(addressOf(t, server), strconv.Itoa(appPort))
 	if err := servesProxy(t, server, p, base); err != nil {
 		t.Fatal(err)
 	}
 
+	const trusts = "global.caddy trusts the proxy's address"
 	if global, err := generated(ctx, server, "caddy/global.caddy"); err != nil {
-		checks.True("global.caddy trusts "+proxySubnet, false, err.Error())
+		checks.True(trusts, false, err.Error())
 	} else {
-		contains(t, "global.caddy trusts "+proxySubnet, "trusted_proxies static "+proxySubnet, global)
+		harness.Contains(t, trusts, "trusted_proxies static "+trusted, global)
 	}
 	clientIPOptionsAre(t, server, "the server trusts X-Forwarded-For from the proxy, read right to left",
-		fmt.Sprintf(`[{"trusted_proxies":{"ranges":[%q],"source":"static"},"trusted_proxies_strict":1,"client_ip_headers":["X-Forwarded-For"]}]`, proxySubnet))
+		fmt.Sprintf(`[{"trusted_proxies":{"ranges":[%q],"source":"static"},"trusted_proxies_strict":1,"client_ip_headers":["X-Forwarded-For"]}]`, trusted))
 
 	// login sends one login through the proxy, for the client
 	// X-Forwarded-For names, and checks the status is want.
 	login := func(what string, want int, forwarded, password string) {
 		t.Helper()
 		resp, err := p.HTTP(ctx, http.MethodPost, base+loginPath, []string{"X-Forwarded-For: " + forwarded}, "password="+password)
-		answers(t, what, want, response{status: resp.Status}, err)
+		harness.Answers(t, what, want, harness.Response{Status: resp.Status}, err)
 	}
 	for i := 1; i <= failureLimit; i++ {
 		login(fmt.Sprintf("client A, 203.0.113.7: wrong password %d of 5", i), http.StatusForbidden, "203.0.113.7", fmt.Sprintf("wrong-%d", i))
@@ -158,11 +160,11 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 
 // servesProxy asks for GET / at base from the proxy once a second until it
 // answers 200. A server that stops first, or one still not serving after
-// serveWithin, is an error carrying its log.
+// harness.ServeWithin, is an error carrying its log.
 func servesProxy(t *testing.T, server *harness.Container, p *harness.Probe, base string) error {
 	t.Helper()
 	ctx := t.Context()
-	deadline := time.Now().Add(serveWithin)
+	deadline := time.Now().Add(harness.ServeWithin)
 	for {
 		resp, err := p.HTTP(ctx, http.MethodGet, base+"/", nil, "")
 		if err == nil && resp.Status == http.StatusOK {
@@ -176,11 +178,11 @@ func servesProxy(t *testing.T, server *harness.Container, p *harness.Probe, base
 		case ierr != nil:
 			return fmt.Errorf("%w; and then: %w", err, ierr)
 		case !ins.State.Running:
-			return withLog(ctx, server, fmt.Errorf("container %s stopped, exit status %d, before it served its proxy", server, ins.State.ExitCode))
+			return harness.WithLog(ctx, server, fmt.Errorf("container %s stopped, exit status %d, before it served its proxy", server, ins.State.ExitCode))
 		case !time.Now().Before(deadline):
-			return withLog(ctx, server, fmt.Errorf("container %s never served its proxy within %s: %w", server, serveWithin, err))
+			return harness.WithLog(ctx, server, fmt.Errorf("container %s never served its proxy within %s: %w", server, harness.ServeWithin, err))
 		}
-		if err := pause(ctx, time.Second); err != nil {
+		if err := harness.Pause(ctx, time.Second); err != nil {
 			return err
 		}
 	}

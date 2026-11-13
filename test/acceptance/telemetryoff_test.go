@@ -23,45 +23,45 @@ func TestTelemetryOff(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		t.Parallel()
 		// As a user who only runs it would: no volume, and nothing set
-		s := serve(t, e, image, spec{port: portTelemetryOff})
+		s := serve(t, e, image, spec{})
 		for _, path := range []string{
 			"/results/telemetry.php", "/results/json.php", "/results/index.php", "/results/",
 			"/results/json.php?id=1", "/results/?id=1&style=modern",
 		} {
-			statusIs(t, s, "GET "+path, http.StatusNotFound, path)
+			harness.StatusIs(t, s, "GET "+path, http.StatusNotFound, path)
 		}
 		body, contentType := multipartForm([][2]string{{"dl", resultDL}})
-		resp, err := s.do(t.Context(), harness.HostClient(), http.MethodPost, "/results/telemetry.php",
+		resp, err := s.Do(t.Context(), harness.HostClient(), http.MethodPost, "/results/telemetry.php",
 			http.Header{"Content-Type": {contentType}}, body)
-		answers(t, "POST /results/telemetry.php", http.StatusNotFound, resp, err)
+		harness.Answers(t, "POST /results/telemetry.php", http.StatusNotFound, resp, err)
 		// Nor do they answer from an allowed route by way of a dot segment
 		for _, path := range []string{
 			"/backend/getIP.php/../../results/json.php", "/backend/getIP.php/%2e%2e/%2e%2e/results/index.php",
 			"/backend/empty.php/../../results/telemetry.php", "/frontend/../results/json.php",
 			"/images/..%2fresults/telemetry.php", "/backend/garbage.php/.%2e/.%2e/results/",
 		} {
-			statusIs(t, s, "GET "+path, http.StatusNotFound, path)
+			harness.StatusIs(t, s, "GET "+path, http.StatusNotFound, path)
 		}
-		stateIs(t, s.c, "state.json", `{"telemetry":false}`)
-		isFile(t, s.c, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
+		stateIs(t, s.C, "state.json", `{"telemetry":false}`)
+		harness.IsFile(t, s.C, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
 	})
 
 	t.Run("switches-ignored", func(t *testing.T) {
 		t.Parallel()
-		s := serve(t, e, image, spec{port: portSwitchesIgnored, env: map[string]string{
+		s := serve(t, e, image, spec{env: map[string]string{
 			"REDACT_IP_ADDRESSES":   "true",
 			"ENABLE_ID_OBFUSCATION": "true",
 		}})
-		logContains(t, s.c, "REDACT_IP_ADDRESSES and ENABLE_ID_OBFUSCATION without TELEMETRY: the log says they are ignored",
+		harness.LogContains(t, s.C, "REDACT_IP_ADDRESSES and ENABLE_ID_OBFUSCATION without TELEMETRY: the log says they are ignored",
 			"TELEMETRY is off, so these are ignored: REDACT_IP_ADDRESSES, ENABLE_ID_OBFUSCATION")
-		statusIs(t, s, "GET /results/json.php with only the switches set", http.StatusNotFound, "/results/json.php")
+		harness.StatusIs(t, s, "GET /results/json.php with only the switches set", http.StatusNotFound, "/results/json.php")
 		levelIs(t, s, "settings.json telemetry_level with only the switches set", "off")
 	})
 
 	t.Run("switch-checked", func(t *testing.T) {
 		t.Parallel()
 		// Ignored is not unchecked
-		refuses(t, e, image, "ENABLE_ID_OBFUSCATION=1 without TELEMETRY", "ENABLE_ID_OBFUSCATION",
-			refusal{env: map[string]string{"ENABLE_ID_OBFUSCATION": "1"}})
+		harness.Refuses(t, e, refusing(image, map[string]string{"ENABLE_ID_OBFUSCATION": "1"}), refusedExit,
+			"ENABLE_ID_OBFUSCATION=1 without TELEMETRY", "ENABLE_ID_OBFUSCATION")
 	})
 }

@@ -17,14 +17,14 @@ func TestServesWithNoVolume(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 
-	s, err := start(t, e, image, spec{port: portNoData})
+	s, err := e.StartServing(t.Context(), t, spec{}.serveSpec(image))
 	if err != nil {
 		t.Fatal(err)
 	}
 	detail := "GET /backend/getIP.php answered"
-	if err = s.wait(t.Context(), "/backend/getIP.php"); err != nil {
+	if err = s.Wait(t.Context(), "/backend/getIP.php"); err != nil {
 		detail = err.Error()
 	}
 	harness.NewChecks(t).True("container serves", err == nil, detail)
-	statusIs(t, s, "/backend/getIP.php", http.StatusOK, "/backend/getIP.php")
+	harness.StatusIs(t, s, "/backend/getIP.php", http.StatusOK, "/backend/getIP.php")
 }

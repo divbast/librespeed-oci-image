@@ -328,8 +328,9 @@ breaking change.
   with gh 2.102.0 or newer
 - `just acceptance` — `go test ./test/acceptance/...` against the image
   `just build` wrote, under `ENGINE` (docker unless it says podman).
-  `IMAGE=… just acceptance` tests another image; an empty `IMAGE` fails
-  rather than skipping. One test:
+  `just IMAGE=… acceptance` tests another image. `IMAGE` is a plain value,
+  so `IMAGE=… just acceptance` would quietly test the local one. An empty
+  `IMAGE` fails rather than skipping. One test:
   `ENGINE=docker IMAGE=localhost/librespeed:dev mise exec -- go test -run
   TestRoutes ./test/acceptance/`
 - `just test` — build, then the acceptance suite
@@ -435,13 +436,18 @@ breaking change.
   against something already shipped any worse, so blocking on one only
   holds back whatever else the release fixes. It is reported instead: on the
   run's summary page and, from main and the daily run, as a code scanning
-  alert. "Nothing published" means the registry answers not-found or denied
-  to an anonymous pull of `:latest`, so a package still private counts as
-  unpublished. Then every finding is reported, on the summary page, as a
-  warning annotation and on stderr, and none blocks, because a first image
-  would otherwise block on whatever the FrankenPHP binary already carries.
-  Once the image is public, only new findings block. A registry that cannot
-  be reached fails the scan rather than waving it through
+  alert. Whether anything is published is the registry's to say, never
+  Trivy's: the scan reads `:latest` as an anonymous client, and when ghcr.io
+  refuses, asks GitHub why, with the check job's token, which is what its
+  `packages: read` is for. Not published yet, or a package still private:
+  every finding is reported, on the summary page, as a warning annotation
+  and on stderr, and none blocks, because a first image would otherwise
+  block on whatever the FrankenPHP binary already carries. Once the image
+  is public, only new findings block. A public image the registry refuses,
+  a registry that cannot be reached, or GitHub not answering fails the scan
+  rather than waving it through. A local `just scan` never asks GitHub, so
+  a refusal there is advisory, with a warning that only CI can tell what
+  it means
 - REUSE-compliant SPDX headers on every file; licence is **BSD-2-Clause**. The
   image's licences label also names what it ships from upstream:
   LGPL-3.0-or-later for LibreSpeed, CC-BY-SA-4.0 for the mmdb, Apache-2.0
@@ -454,11 +460,14 @@ breaking change.
   check can never pass under looser settings than we ship. What CI proves
   is what ships. `TestContract` runs ci's contract suite against the image;
   the other tests are LibreSpeed's own, one topic per file, and run in
-  parallel, each on fixed host ports of its own (18290 to 18311), apart
-  from the restart tests, whose phases share one volume and so run in turn.
-  What a test runs inside a container is a probe subcommand: ci's
-  `core.php`, or LibreSpeed's own in `test/probe/app.php`, which PHPStan
-  analyses at level max
+  parallel, apart from the restart tests, whose phases share one volume
+  and so run in turn. Each serves through the harness's `Serve`, which
+  publishes on the host's loopback at ports the engine picks, so no two
+  tests, or two suites on one host, ask for the same one; the assertions
+  (`StatusIs`, `Contains`, `Refuses` and the rest) are the harness's too,
+  shared with every divbast image. What a test runs inside a container is a
+  probe subcommand: ci's `core.php`, or LibreSpeed's own in
+  `test/probe/app.php`, which PHPStan analyses at level max
 - **Go is modern and idiomatic, and linted strictly**, under ci's
   `go/golangci.yml`. Bash is for what is short and will stay so: the
   justfile's recipes. A check that runs inside a Containerfile build stage

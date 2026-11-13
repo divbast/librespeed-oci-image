@@ -44,13 +44,6 @@ const (
 // failureLimit is how many failures inside 900 s lock a client out.
 const failureLimit = 5
 
-// The network every container of TestLockout runs on, and its address
-// there, so the server sees one client across a restart.
-const (
-	lockoutSubnet = "10.89.66.0/24"
-	lockoutIP     = "10.89.66.200"
-)
-
 // failureLimits is one client's five failed logins, the limit.
 var failureLimits = regexp.MustCompile(`\A([0-9a-f.:/]+)=5\z`)
 
@@ -72,19 +65,22 @@ func statsOn() map[string]string {
 func TestLockout(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sp := spec{port: portLockout, volume: newVolume(t, e), network: newNetwork(t, e, lockoutSubnet), ip: lockoutIP, env: statsOn()}
+	// Every phase runs on one network, and the restart at the address the
+	// first start drew there, so the server sees one client across it
+	sp := spec{volume: newVolume(t, e), network: newNetwork(t, e), env: statsOn()}
 
 	t.Run("five-failures", func(t *testing.T) {
 		s := serve(t, e, image, sp)
+		sp.ip = addressOf(t, s.C)
 		checks := harness.NewChecks(t)
 		ctx := t.Context()
 
-		if global, err := generated(ctx, s.c, "caddy/global.caddy"); err != nil {
+		if global, err := generated(ctx, s.C, "caddy/global.caddy"); err != nil {
 			checks.True("TRUSTED_PROXIES unset: global.caddy trusts no proxy", false, err.Error())
 		} else {
-			lacks(t, "TRUSTED_PROXIES unset: global.caddy trusts no proxy", "trusted_proxies", global)
+			harness.Lacks(t, "TRUSTED_PROXIES unset: global.caddy trusts no proxy", "trusted_proxies", global)
 		}
-		clientIPOptionsAre(t, s.c, "TRUSTED_PROXIES unset: the server trusts no proxy",
+		clientIPOptionsAre(t, s.C, "TRUSTED_PROXIES unset: the server trusts no proxy",
 			`[{"trusted_proxies":null,"trusted_proxies_strict":null,"client_ip_headers":null}]`)
 
 		// Every header a client might hope the key comes from:
@@ -104,7 +100,7 @@ func TestLockout(t *testing.T) {
 		checks.True("429 says when to try again", digits.MatchString(got.retryAfter) && err == nil && wait >= 1 && wait <= 900,
 			"Retry-After: "+got.retryAfter)
 
-		buckets, err := failureBuckets(ctx, s.c)
+		buckets, err := failureBuckets(ctx, s.C)
 		if err != nil {
 			buckets = err.Error()
 		}
@@ -112,44 +108,47 @@ func TestLockout(t *testing.T) {
 		checks.True("one client, keyed on the connection's own address, with five failures",
 			err == nil && m != nil && !strings.HasPrefix(m[1], "203.0.113.") && !strings.HasPrefix(m[1], "198.51.100."), buckets)
 		b.loginIs(t, "a sixth wrong password", http.StatusTooManyRequests, "wrong-6", nil)
-		again, err := failureBuckets(ctx, s.c)
+		again, err := failureBuckets(ctx, s.C)
 		checks.True("a 429 records nothing", err == nil && m != nil && again == buckets,
 			fmt.Sprintf("%q before, %q after", buckets, again))
 	})
 
 	t.Run("restart", func(t *testing.T) {
+		if sp.ip == "" {
+			t.Fatal("the first start's address is unknown, so the server would take a restart for a new client")
+		}
 		// The failures are on /data, so a restart forgives none of them
 		s := serve(t, e, image, sp)
 		b := newBrowser(t, s)
 		b.loginIs(t, "after a restart: the right password", http.StatusTooManyRequests, statsPasswordValue, nil)
-		records(t, s.probe, "age-failures", "901")
+		harness.RunRecords(t, s.Probe, "age-failures", "901")
 		b.loginIs(t, "after age-failures 901: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 
 		// A second client, apart from this host: the server's own loopback
-		loopbackIs(t, s.probe, "from the server's own loopback, a second client: a wrong password",
+		loopbackIs(t, s.Probe, "from the server's own loopback, a second client: a wrong password",
 			http.StatusForbidden, "http-request", "wrong-1")
-		bucketsAre(t, s.c, "the loopback's failure is counted apart from this host", "127.0.0.1=1")
+		bucketsAre(t, s.C, "the loopback's failure is counted apart from this host", "127.0.0.1=1")
 
 		// One password is checked at a time, server-wide. While the probe
 		// holds login.php's lock, even the right password is turned away at
 		// once, and nothing is recorded.
-		body := loopbackIs(t, s.probe, "the right password while the probe holds the lock",
+		body := loopbackIs(t, s.Probe, "the right password while the probe holds the lock",
 			http.StatusTooManyRequests, "http-request-locked", statsPasswordValue)
-		contains(t, "the 429 says why", busy, body)
-		bucketsAre(t, s.c, "turned away while busy, nothing is recorded", "127.0.0.1=1")
+		harness.Contains(t, "the 429 says why", busy, body)
+		bucketsAre(t, s.C, "turned away while busy, nothing is recorded", "127.0.0.1=1")
 
 		betweenThreads(t, s, b)
 
 		// A client already at its limit is answered before the lock is
 		// tried, so no flood from it ever holds the lock against anyone else
 		for i := 2; i <= failureLimit; i++ {
-			loopbackIs(t, s.probe, fmt.Sprintf("from the loopback: wrong password %d of 5", i),
+			loopbackIs(t, s.Probe, fmt.Sprintf("from the loopback: wrong password %d of 5", i),
 				http.StatusForbidden, "http-request", fmt.Sprintf("wrong-%d", i+1))
 		}
-		bucketsAre(t, s.c, "the loopback is at its limit", "127.0.0.1=5")
-		body = loopbackIs(t, s.probe, "at its limit, while the probe holds the lock: the right password",
+		bucketsAre(t, s.C, "the loopback is at its limit", "127.0.0.1=5")
+		body = loopbackIs(t, s.Probe, "at its limit, while the probe holds the lock: the right password",
 			http.StatusTooManyRequests, "http-request-locked", statsPasswordValue)
-		contains(t, "at its limit, it is told so, not that a check is under way", overLimit, body)
+		harness.Contains(t, "at its limit, it is told so, not that a check is under way", overLimit, body)
 
 		duringFlood(t, s, b)
 	})
@@ -174,11 +173,11 @@ func claimed(i int) http.Header {
 // seconds, so login A is caught holding the lock in /proc/locks, read
 // rather than probed with a lock of the test's own, and login B, sent
 // then, is turned away.
-func betweenThreads(t *testing.T, s *served, b *browser) {
+func betweenThreads(t *testing.T, s *harness.Serving, b *browser) {
 	t.Helper()
 	ctx := t.Context()
 	checks := harness.NewChecks(t)
-	records(t, s.probe, "write-stats-hash", statsPasswordValue, "16")
+	harness.RunRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "16")
 
 	type answered struct {
 		status int
@@ -204,7 +203,7 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 		case got := <-loginA:
 			a = &got
 		default:
-			holders, err = lockHolders(ctx, s.probe, statsLoginLock)
+			holders, err = lockHolders(ctx, s.Probe, statsLoginLock)
 		}
 	}
 	const holds = "login A holds the lock: an flock(2) write lock, held by the process running the server's argv"
@@ -221,18 +220,18 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 			fmt.Sprintf("%v; the server is %q", holders, serverArgv))
 	}
 
-	body := loopbackIs(t, s.probe, "login B, sent meanwhile to another of the server's threads",
+	body := loopbackIs(t, s.Probe, "login B, sent meanwhile to another of the server's threads",
 		http.StatusTooManyRequests, "http-request", "wrong-2")
-	contains(t, "login B: the 429 says why", busy, body)
+	harness.Contains(t, "login B: the 429 says why", busy, body)
 	if a == nil {
 		got := <-loginA
 		a = &got
 	}
-	answers(t, "login A, once checked: the right password", http.StatusSeeOther, response{status: a.status}, a.err)
-	bucketsAre(t, s.c, "login B recorded nothing", "127.0.0.1=1")
+	harness.Answers(t, "login A, once checked: the right password", http.StatusSeeOther, harness.Response{Status: a.status}, a.err)
+	bucketsAre(t, s.C, "login B recorded nothing", "127.0.0.1=1")
 
 	// PHP 8.5's default cost, as the bootstrap writes it
-	records(t, s.probe, "write-stats-hash", statsPasswordValue, "12")
+	harness.RunRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "12")
 	b.loginIs(t, "with the hash back at cost 12, the lock free: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 }
 
@@ -243,7 +242,7 @@ const floodSize = 4
 // database's write lock is held, never takes login.php's lock: any of it
 // that did would sit inside it until the hold ends, and this host's
 // login, sent meanwhile, would be turned away.
-func duringFlood(t *testing.T, s *served, b *browser) {
+func duringFlood(t *testing.T, s *harness.Serving, b *browser) {
 	t.Helper()
 	ctx := t.Context()
 	checks := harness.NewChecks(t)
@@ -253,12 +252,12 @@ func duringFlood(t *testing.T, s *served, b *browser) {
 	}
 	hold := make(chan held, 1)
 	go func() {
-		out, err := output(ctx, s.probe, "hold-db-lock", "3")
+		out, err := output(ctx, s.Probe, "hold-db-lock", "3")
 		hold <- held{out: out, err: err}
 	}()
 	// Until SQLite's write lock on the database is held, as /proc/locks
 	// shows it: a POSIX write lock, taken by hold-db-lock
-	locked, err := pollHolders(ctx, s.probe, statsLoginDB, 10*time.Second, func(h holder) bool {
+	locked, err := pollHolders(ctx, s.Probe, statsLoginDB, 10*time.Second, func(h holder) bool {
 		return h.kind == "POSIX" && h.access == "WRITE" && slices.Contains(h.argv, "hold-db-lock")
 	})
 
@@ -270,14 +269,14 @@ func duringFlood(t *testing.T, s *served, b *browser) {
 	)
 	for i := range floodSize {
 		wg.Go(func() {
-			flood[i], floodErr[i] = loopbackRequest(ctx, s.probe, "http-request", statsPasswordValue)
+			flood[i], floodErr[i] = loopbackRequest(ctx, s.Probe, "http-request", statsPasswordValue)
 			answered.Add(1)
 		})
 	}
 	// Until the flood is answered, or one of it holds the lock
 	deadline := time.Now().Add(10 * time.Second)
 	for answered.Load() < floodSize && time.Now().Before(deadline) {
-		if holders, herr := lockHolders(ctx, s.probe, statsLoginLock); herr != nil || len(holders) > 0 {
+		if holders, herr := lockHolders(ctx, s.Probe, statsLoginLock); herr != nil || len(holders) > 0 {
 			break
 		}
 	}
@@ -289,11 +288,11 @@ func duringFlood(t *testing.T, s *served, b *browser) {
 		if floodErr[i] == nil && flood[i].Status == http.StatusTooManyRequests && strings.Contains(string(flood[i].Body), overLimit) {
 			refused++
 		} else {
-			t.Logf("flood %d: %d %v: %s", i+1, flood[i].Status, floodErr[i], clip(string(flood[i].Body)))
+			t.Logf("flood %d: %d %v: %s", i+1, flood[i].Status, floodErr[i], harness.Clip(string(flood[i].Body)))
 		}
 	}
 	harness.Equal(checks, "the flood: each told it is over its limit", floodSize, refused)
-	bucketsAre(t, s.c, "the flood recorded nothing", "127.0.0.1=5")
+	bucketsAre(t, s.C, "the flood recorded nothing", "127.0.0.1=5")
 
 	h := <-hold
 	switch {
@@ -358,7 +357,7 @@ func pollHolders(ctx context.Context, p *harness.Probe, path string, within time
 		if !time.Now().Before(deadline) {
 			return nil, nil
 		}
-		if err := pause(ctx, 100*time.Millisecond); err != nil {
+		if err := harness.Pause(ctx, 100*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
@@ -376,7 +375,7 @@ func loopbackRequest(ctx context.Context, p *harness.Probe, sub, password string
 	status, body, _ := strings.Cut(out, "\n")
 	code, err := strconv.Atoi(status)
 	if err != nil || len(status) != 3 {
-		return harness.HTTPResponse{}, fmt.Errorf("%s printed no status line: %s", sub, clip(out))
+		return harness.HTTPResponse{}, fmt.Errorf("%s printed no status line: %s", sub, harness.Clip(out))
 	}
 	return harness.HTTPResponse{Status: code, Body: []byte(body)}, nil
 }
@@ -386,7 +385,7 @@ func loopbackRequest(ctx context.Context, p *harness.Probe, sub, password string
 func loopbackIs(t *testing.T, p *harness.Probe, what string, want int, sub, password string) string {
 	t.Helper()
 	got, err := loopbackRequest(t.Context(), p, sub, password)
-	answers(t, what, want, response{status: got.Status}, err)
+	harness.Answers(t, what, want, harness.Response{Status: got.Status}, err)
 	return string(got.Body)
 }
 

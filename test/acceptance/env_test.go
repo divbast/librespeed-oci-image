@@ -5,6 +5,8 @@ package acceptance
 
 import (
 	"testing"
+
+	"github.com/divbast/ci/harness"
 )
 
 // TestHostileValuesRenderEscaped sets TITLE, TAGLINE and GDPR_EMAIL to
@@ -13,7 +15,7 @@ import (
 func TestHostileValuesRenderEscaped(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portHostile, env: map[string]string{
+	s := serve(t, e, image, spec{env: map[string]string{
 		"TITLE":      `Tést <b>&'"`,
 		"TAGLINE":    "<script>x</script>",
 		"GDPR_EMAIL": "a@b.example",
@@ -29,13 +31,13 @@ func TestHostileValuesRenderEscaped(t *testing.T) {
 		{what: "GDPR_EMAIL in the mailto: link", needle: `href="mailto:a@b.example"`},
 		{what: "GDPR_EMAIL in place of upstream's placeholder text", needle: ">a@b.example</a>"},
 	} {
-		contains(t, tt.what, tt.needle, page)
+		harness.Contains(t, tt.what, tt.needle, page)
 	}
 	for _, tt := range []struct{ what, needle string }{
 		{what: "no raw <b>", needle: "<b>"},
 		{what: "no raw <script>x", needle: "<script>x"},
 		{what: "no upstream placeholder address", needle: "PUT@YOUR_EMAIL.HERE"},
 	} {
-		lacks(t, tt.what, tt.needle, page)
+		harness.Lacks(t, tt.what, tt.needle, page)
 	}
 }

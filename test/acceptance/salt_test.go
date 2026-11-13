@@ -30,15 +30,15 @@ type salt struct {
 }
 
 // readSalt runs the probe's read-salt in s.
-func readSalt(t *testing.T, s *served) (salt, error) {
+func readSalt(t *testing.T, s *harness.Serving) (salt, error) {
 	t.Helper()
-	out, err := output(t.Context(), s.probe, "read-salt")
+	out, err := output(t.Context(), s.Probe, "read-salt")
 	if err != nil {
 		return salt{}, err
 	}
 	var got salt
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		return salt{}, fmt.Errorf("read-salt printed no JSON object: %w: %s", err, clip(out))
+		return salt{}, fmt.Errorf("read-salt printed no JSON object: %w: %s", err, harness.Clip(out))
 	}
 	got.raw = out
 	return got, nil
@@ -65,7 +65,7 @@ func TestSaltSurvives(t *testing.T) {
 		id       string
 	)
 	// sameSalt checks the salt s reads is a salt, and the one first read.
-	sameSalt := func(t *testing.T, s *served, what string) {
+	sameSalt := func(t *testing.T, s *harness.Serving, what string) {
 		t.Helper()
 		checks := harness.NewChecks(t)
 		what += ": the same salt"
@@ -77,22 +77,22 @@ func TestSaltSurvives(t *testing.T) {
 			checks.True(what, false, err.Error())
 		default:
 			checks.True(what, saltFormat.MatchString(first.Contents) && again.raw == first.raw,
-				fmt.Sprintf("first %s, now %s", clip(first.raw), clip(again.raw)))
+				fmt.Sprintf("first %s, now %s", harness.Clip(first.raw), harness.Clip(again.raw)))
 		}
 	}
 
 	t.Run("first-start", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portSalt, volume: volume, env: obfuscated})
+		s := serve(t, e, image, spec{volume: volume, env: obfuscated})
 		checks := harness.NewChecks(t)
 		first, firstErr = readSalt(t, s)
 		if firstErr != nil {
 			checks.True("the salt is in upstream's format", false, firstErr.Error())
 			checks.True("the salt is private to uid 65532", false, firstErr.Error())
 		} else {
-			checks.True("the salt is in upstream's format", saltFormat.MatchString(first.Contents), clip(first.Contents))
+			checks.True("the salt is in upstream's format", saltFormat.MatchString(first.Contents), harness.Clip(first.Contents))
 			harness.Equal(checks, "the salt is private to uid 65532", "0600", first.Mode)
 		}
-		if generated, err := telemetrySettings(t.Context(), s.c); err == nil {
+		if generated, err := telemetrySettings(t.Context(), s.C); err == nil {
 			password = statsPassword(generated)
 		}
 
@@ -103,11 +103,11 @@ func TestSaltSurvives(t *testing.T) {
 	})
 
 	t.Run("restart", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portSalt, volume: volume, env: obfuscated})
+		s := serve(t, e, image, spec{volume: volume, env: obfuscated})
 		sameSalt(t, s, "after a restart")
 		resultIs(t, s, "after a restart: GET /results/json.php?id="+id, id)
 		again := ""
-		if generated, err := telemetrySettings(t.Context(), s.c); err == nil {
+		if generated, err := telemetrySettings(t.Context(), s.C); err == nil {
 			again = statsPassword(generated)
 		}
 		harness.NewChecks(t).True("after a restart: a new stats_password", password != "" && again != "" && again != password,
@@ -115,13 +115,13 @@ func TestSaltSurvives(t *testing.T) {
 	})
 
 	t.Run("telemetry-off", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portSalt, volume: volume, env: map[string]string{"ENABLE_ID_OBFUSCATION": "true"}})
-		statusIs(t, s, "with telemetry off: GET /results/json.php", http.StatusNotFound, "/results/json.php?id="+id)
+		s := serve(t, e, image, spec{volume: volume, env: map[string]string{"ENABLE_ID_OBFUSCATION": "true"}})
+		harness.StatusIs(t, s, "with telemetry off: GET /results/json.php", http.StatusNotFound, "/results/json.php?id="+id)
 		sameSalt(t, s, "with telemetry off")
 	})
 
 	t.Run("telemetry-on-again", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portSalt, volume: volume, env: obfuscated})
+		s := serve(t, e, image, spec{volume: volume, env: obfuscated})
 		sameSalt(t, s, "with telemetry on again")
 		resultIs(t, s, "with telemetry on again: GET /results/json.php?id="+id, id)
 	})

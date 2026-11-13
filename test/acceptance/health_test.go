@@ -29,7 +29,7 @@ const healthy = "200 ok"
 func TestHealthFromHost(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portHealthOff, healthPort: portHealthOffHealth})
+	s := serve(t, e, image, spec{health: true})
 	healthzIs(t, s, "telemetry off: GET :8081/healthz", healthy)
 }
 
@@ -44,35 +44,35 @@ func TestHealthFailures(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 	volume := newVolume(t, e)
-	sp := spec{port: portHealthOn, healthPort: portHealthOnHealth, volume: volume, env: telemetryOn()}
+	sp := spec{health: true, volume: volume, env: telemetryOn()}
 
 	t.Run("telemetry-on", func(t *testing.T) {
 		s := serve(t, e, image, sp)
 		checks := harness.NewChecks(t)
 		ctx := t.Context()
 		const fresh = "telemetry on, a fresh volume"
-		tableIs(t, s.c, fresh+": no result has been recorded", emptyResultsTable)
+		tableIs(t, s.C, fresh+": no result has been recorded", emptyResultsTable)
 		healthzIs(t, s, fresh+": GET :8081/healthz", healthy)
-		if code, out, err := runHealthProbe(ctx, s.c); err != nil {
+		if code, out, err := runHealthProbe(ctx, s.C); err != nil {
 			checks.True(fresh+": "+healthProbe+" exits 0", false, err.Error())
 		} else {
-			checks.True(fresh+": "+healthProbe+" exits 0", code == 0, fmt.Sprintf("exit status %d: %s", code, clip(out)))
+			checks.True(fresh+": "+healthProbe+" exits 0", code == 0, fmt.Sprintf("exit status %d: %s", code, harness.Clip(out)))
 		}
-		engineHealthy(t, e, image, s.c, fresh)
+		engineHealthy(t, e, image, s.C, fresh)
 
 		// A database the server cannot write would take results and record
 		// none of them
-		chmodDB(t, s.c, 0o444)
+		chmodDB(t, s.C, 0o444)
 		healthFails(t, s, "with /data/telemetry.db read-only", "database")
-		chmodDB(t, s.c, 0o644)
+		chmodDB(t, s.C, 0o644)
 		healthzIs(t, s, "writable again: GET :8081/healthz", healthy)
-		records(t, s.probe, "damage-db")
+		harness.RunRecords(t, s.Probe, "damage-db")
 		healthFails(t, s, "after damage-db", "database")
-		records(t, s.probe, "remove-db")
+		harness.RunRecords(t, s.Probe, "remove-db")
 		healthFails(t, s, "after remove-db", "database")
 		// Asked, twice over, the check made no database, so a missing one
 		// stays missing until upstream records a result
-		isFile(t, s.c, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
+		harness.IsFile(t, s.C, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
 	})
 
 	t.Run("operator-ini", func(t *testing.T) {
@@ -94,21 +94,17 @@ func TestHealthFailures(t *testing.T) {
 
 // healthz sends GET /healthz to s's published health port, and returns
 // the status and the body, less its final newline.
-func healthz(ctx context.Context, s *served) (status int, body string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.healthBase+"/healthz", http.NoBody)
+func healthz(ctx context.Context, s *harness.Serving) (status int, body string, err error) {
+	resp, err := s.Health().Get(ctx, "/healthz", nil)
 	if err != nil {
 		return 0, "", err
 	}
-	resp, err := send(harness.HostClient(), req)
-	if err != nil {
-		return 0, "", err
-	}
-	return resp.status, strings.TrimSuffix(string(resp.body), "\n"), nil
+	return resp.Status, strings.TrimSuffix(string(resp.Body), "\n"), nil
 }
 
 // healthzIs checks GET :8081/healthz, from the host, answers want, its
 // status and body as one.
-func healthzIs(t *testing.T, s *served, what, want string) {
+func healthzIs(t *testing.T, s *harness.Serving, what, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	status, body, err := healthz(t.Context(), s)
@@ -123,7 +119,7 @@ func healthzIs(t *testing.T, s *served, what, want string) {
 // of its own, and that the probe exits 1, naming the /healthz half and
 // that check. The getIP.php half, still sound, goes unnamed. It returns
 // the body of the 503.
-func healthFails(t *testing.T, s *served, what, check string) string {
+func healthFails(t *testing.T, s *harness.Serving, what, check string) string {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	ctx := t.Context()
@@ -139,7 +135,7 @@ func healthFails(t *testing.T, s *served, what, check string) string {
 
 	exits := fmt.Sprintf("%s: %s exits 1", what, healthProbe)
 	only := fmt.Sprintf("%s: the probe names the /healthz half and %s, and only that half", what, check)
-	code, out, err := runHealthProbe(ctx, s.c)
+	code, out, err := runHealthProbe(ctx, s.C)
 	if err != nil {
 		checks.True(exits, false, err.Error())
 		checks.True(only, false, err.Error())
@@ -147,7 +143,7 @@ func healthFails(t *testing.T, s *served, what, check string) string {
 	}
 	harness.Equal(checks, exits, 1, code)
 	half := strings.Index(out, "http://127.0.0.1:8081/healthz")
-	checks.True(only, half >= 0 && strings.Contains(out[half:], check+":") && !strings.Contains(out, "getIP.php"), clip(out))
+	checks.True(only, half >= 0 && strings.Contains(out[half:], check+":") && !strings.Contains(out, "getIP.php"), harness.Clip(out))
 	return body
 }
 
@@ -161,43 +157,36 @@ func runHealthProbe(ctx context.Context, c *harness.Container) (code int, out st
 	return res.Code, strings.TrimSpace(string(res.Stdout) + string(res.Stderr)), nil
 }
 
-// engineHealthy checks the engine's own verdict, which it reaches by
-// running the health check itself: Docker runs the image's HEALTHCHECK,
-// Podman the --health-cmd it was given. A shell-form command needs
-// /bin/sh, which the image lacks, so only the exec form can pass. Docker
-// must say healthy within the image's start period; Podman runs one check
-// when asked.
+// engineHealthy checks the engine's own verdict, which it reaches on its
+// own schedule, as it would for a user: Docker runs the image's
+// HEALTHCHECK, and Podman the --health-cmd it was given, from the systemd
+// timer it sets up for it. A shell-form command needs /bin/sh, which the
+// image lacks, so only the exec form can pass. The engine must say healthy
+// within the image's start period and three of its intervals, the window
+// the contract's own engine-healthy check gives it, and under that check's
+// name.
 func engineHealthy(t *testing.T, e harness.Engine, image string, c *harness.Container, scenario string) {
 	t.Helper()
 	ctx := t.Context()
-	checks := harness.NewChecks(t)
-	if e.Name() == "podman" {
-		found := "0"
-		if err := c.EngineHealthy(ctx, 0); err != nil {
-			found = err.Error()
-		}
-		harness.Equal(checks, scenario+": podman healthcheck run", "0", found)
-		return
-	}
 	var startPeriod time.Duration
 	if cfg, err := e.ImageConfig(ctx, t, image); err != nil {
 		t.Errorf("reading the image's HEALTHCHECK: %v", err)
 	} else if cfg.Healthcheck != nil {
 		startPeriod = cfg.Healthcheck.StartPeriod
 	}
-	what := fmt.Sprintf("%s: %s reports it healthy within the %d s start period", scenario, e.Name(), int(startPeriod/time.Second))
 	found := "healthy"
 	if err := c.EngineHealthy(ctx, startPeriod); err != nil {
 		found = err.Error()
 	}
-	harness.Equal(checks, what, "healthy", found)
+	harness.Equal(harness.NewChecks(t), scenario+": the engine reports the container healthy within the start period and three intervals",
+		"healthy", found)
 }
 
 // chmodDB sets the mode of the database, as the server's own uid, which
 // owns it, or fails t.
 func chmodDB(t *testing.T, c *harness.Container, mode int) {
 	t.Helper()
-	if _, err := phpIn(t.Context(), c, fmt.Sprintf(`if (!chmod(%q, 0%s)) { exit(1); }`, telemetryDB, strconv.FormatInt(int64(mode), 8))); err != nil {
+	if _, err := harness.PHPIn(t.Context(), c, fmt.Sprintf(`if (!chmod(%q, 0%s)) { exit(1); }`, telemetryDB, strconv.FormatInt(int64(mode), 8))); err != nil {
 		t.Fatalf("chmod %o %s: %v", mode, telemetryDB, err)
 	}
 }

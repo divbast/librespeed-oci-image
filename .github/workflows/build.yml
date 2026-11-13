@@ -40,7 +40,7 @@ concurrency:
 jobs:
   check:
     name: check
-    uses: divbast/ci/.github/workflows/app-check.yml@58ed2348852e95ccafd91c06c61f963b19769c73 # v1.25.0
+    uses: divbast/ci/.github/workflows/app-check.yml@0a62aa8cfe2c68a0a44343d7a7693a68c06c2b3b # v2.0.0
     with:
       # The one stage that reaches outside this repository: it fetches
       # LibreSpeed and asks whether its tag still names the pinned commit.
@@ -49,6 +49,7 @@ jobs:
     permissions:
       contents: read
       attestations: read # verify the FrankenPHP binary
+      packages: read # the scan asks GitHub whether the published image is absent or private
       security-events: write # code scanning, from main
 
   # The one check main's ruleset requires, so the job list can change without
@@ -80,7 +81,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main'
       && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    uses: divbast/ci/.github/workflows/app-publish.yml@58ed2348852e95ccafd91c06c61f963b19769c73 # v1.25.0
+    uses: divbast/ci/.github/workflows/app-publish.yml@0a62aa8cfe2c68a0a44343d7a7693a68c06c2b3b # v2.0.0
     with:
       image: ghcr.io/divbast/librespeed
       version-arg: LIBRESPEED_VERSION

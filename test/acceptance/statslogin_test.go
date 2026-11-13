@@ -35,13 +35,13 @@ var oneFailure = regexp.MustCompile(`\A[0-9a-f.:/]+=1\z`)
 // browser is a client from the host with a cookie jar of its own, as one
 // browser would be.
 type browser struct {
-	s      *served
+	s      *harness.Serving
 	client *http.Client
 	jar    http.CookieJar
 }
 
 // newBrowser returns a browser for s with an empty cookie jar.
-func newBrowser(t *testing.T, s *served) *browser {
+func newBrowser(t *testing.T, s *harness.Serving) *browser {
 	t.Helper()
 	// cookiejar.New fails only for options it is not given
 	jar, _ := cookiejar.New(nil)
@@ -63,16 +63,16 @@ type loginAnswer struct {
 // header.
 func (b *browser) login(ctx context.Context, path, password string, header http.Header) (loginAnswer, error) {
 	form := url.Values{"password": {password}}
-	resp, err := b.s.postForm(ctx, b.client, path, header, form)
+	resp, err := postForm(ctx, b.s, b.client, path, header, form)
 	if err != nil {
 		return loginAnswer{}, err
 	}
 	return loginAnswer{
-		status:     resp.status,
-		location:   resp.header.Get("Location"),
-		retryAfter: resp.header.Get("Retry-After"),
+		status:     resp.Status,
+		location:   resp.Header.Get("Location"),
+		retryAfter: resp.Header.Get("Retry-After"),
 		sent:       len(form.Encode()),
-		body:       string(resp.body),
+		body:       string(resp.Body),
 	}, nil
 }
 
@@ -81,19 +81,19 @@ func (b *browser) login(ctx context.Context, path, password string, header http.
 func (b *browser) loginIs(t *testing.T, what string, want int, password string, header http.Header) loginAnswer {
 	t.Helper()
 	got, err := b.login(t.Context(), loginPath, password, header)
-	answers(t, what, want, response{status: got.status}, err)
+	harness.Answers(t, what, want, harness.Response{Status: got.status}, err)
 	return got
 }
 
 // page returns the stats page, as this browser sees it.
 func (b *browser) page(ctx context.Context) (string, error) {
-	resp, err := b.s.do(ctx, b.client, http.MethodGet, statsPath, nil, nil)
-	return string(resp.body), err
+	resp, err := b.s.Do(ctx, b.client, http.MethodGet, statsPath, nil, nil)
+	return string(resp.Body), err
 }
 
 // session returns the PHP session id the browser's jar holds, or "".
 func (b *browser) session() string {
-	u, err := url.Parse(b.s.base + "/")
+	u, err := url.Parse(b.s.Base + "/")
 	if err != nil {
 		return ""
 	}
@@ -109,7 +109,7 @@ func (b *browser) session() string {
 // client=count lines, by client. It opens the database read-only, so it
 // never creates one.
 func failureBuckets(ctx context.Context, c *harness.Container) (string, error) {
-	out, err := phpIn(ctx, c, `echo json_encode((new PDO("sqlite:/data/stats-login.db", null, null,
+	out, err := harness.PHPIn(ctx, c, `echo json_encode((new PDO("sqlite:/data/stats-login.db", null, null,
 			[PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]))
 		->query("SELECT client, COUNT(*) FROM failures WHERE at > " . (time() - 900) . " GROUP BY client ORDER BY client")
 		->fetchAll(PDO::FETCH_KEY_PAIR), JSON_FORCE_OBJECT), "\n";`)
@@ -118,7 +118,7 @@ func failureBuckets(ctx context.Context, c *harness.Container) (string, error) {
 	}
 	var counts map[string]json.Number
 	if err := json.Unmarshal([]byte(out), &counts); err != nil {
-		return "", fmt.Errorf("the failures are not a JSON object: %w: %s", err, clip(out))
+		return "", fmt.Errorf("the failures are not a JSON object: %w: %s", err, harness.Clip(out))
 	}
 	lines := make([]string, 0, len(counts))
 	for _, client := range slices.Sorted(maps.Keys(counts)) {
@@ -155,7 +155,7 @@ func TestStatsLogin(t *testing.T) {
 	volume := newVolume(t, e)
 
 	t.Run("set", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portStatsLogin, volume: volume, env: map[string]string{
+		s := serve(t, e, image, spec{volume: volume, env: map[string]string{
 			"TELEMETRY":      "true",
 			"STATS_PASSWORD": statsPasswordValue,
 		}})
@@ -163,7 +163,7 @@ func TestStatsLogin(t *testing.T) {
 		ctx := t.Context()
 
 		const stored = "/data/stats-password.hash"
-		if hash, err := phpIn(ctx, s.c, `const HASH = "/data/stats-password.hash";
+		if hash, err := harness.PHPIn(ctx, s.C, `const HASH = "/data/stats-password.hash";
 			echo json_encode(["mode" => sprintf("%04o", (int) @fileperms(HASH) & 0o7777),
 				"algo" => password_get_info((string) @file_get_contents(HASH))["algoName"],
 				"verifies" => password_verify("`+statsPasswordValue+`", (string) @file_get_contents(HASH)),
@@ -172,11 +172,11 @@ func TestStatsLogin(t *testing.T) {
 		} else {
 			harness.Equal(checks, stored, `{"mode":"0600","algo":"bcrypt","verifies":true,"plain":false}`, strings.TrimSuffix(hash, "\n"))
 		}
-		logLacks(t, s.c, "the log never shows STATS_PASSWORD", statsPasswordValue)
+		harness.LogLacks(t, s.C, "the log never shows STATS_PASSWORD", statsPasswordValue)
 		// The server starts without it, so no PHP the server runs can read
 		// it back. TELEMETRY shows the environment was read at all.
 		const environment = "the server's environment"
-		if environ, err := phpIn(ctx, s.c, `const ENVIRON = "/proc/1/environ";
+		if environ, err := harness.PHPIn(ctx, s.C, `const ENVIRON = "/proc/1/environ";
 			echo json_encode(["read" => @file_get_contents(ENVIRON) !== false,
 				"TELEMETRY" => str_contains((string) @file_get_contents(ENVIRON), "TELEMETRY=true"),
 				"STATS_PASSWORD" => str_contains((string) @file_get_contents(ENVIRON), "STATS_PASSWORD=")]), "\n";`); err != nil {
@@ -185,17 +185,17 @@ func TestStatsLogin(t *testing.T) {
 			harness.Equal(checks, environment, `{"read":true,"TELEMETRY":true,"STATS_PASSWORD":false}`, strings.TrimSuffix(environ, "\n"))
 		}
 
-		statusIs(t, s, "GET /results/stats.php", http.StatusOK, statsPath)
+		harness.StatusIs(t, s, "GET /results/stats.php", http.StatusOK, statsPath)
 		b := newBrowser(t, s)
 		page, err := b.page(ctx)
 		if err != nil {
 			t.Errorf("GET %s: %v", statsPath, err)
 		}
-		contains(t, "GET /results/stats.php is upstream's login form", loginForm, page)
+		harness.Contains(t, "GET /results/stats.php is upstream's login form", loginForm, page)
 		before := b.session()
 		wrong := b.loginIs(t, "POST /results/stats.php?op=login with a wrong password", http.StatusForbidden, "wrong", nil)
-		contains(t, "a wrong password: the form again", loginForm, wrong.body)
-		recorded, err := failureBuckets(ctx, s.c)
+		harness.Contains(t, "a wrong password: the form again", loginForm, wrong.body)
+		recorded, err := failureBuckets(ctx, s.C)
 		if err != nil {
 			recorded = err.Error()
 		}
@@ -222,10 +222,10 @@ func TestStatsLogin(t *testing.T) {
 		if err != nil {
 			t.Errorf("GET %s: %v", statsPath, err)
 		}
-		contains(t, "following it with the cookie, GET /results/stats.php is logged in", loggedIn, page)
+		harness.Contains(t, "following it with the cookie, GET /results/stats.php is logged in", loggedIn, page)
 		// Empty proves nothing unless the failure was there to clear
 		const cleared = "the login clears that client's failures"
-		if left, ferr := failureBuckets(ctx, s.c); ferr != nil {
+		if left, ferr := failureBuckets(ctx, s.C); ferr != nil {
 			checks.True(cleared, false, ferr.Error())
 		} else {
 			checks.True(cleared, oneFailure.MatchString(recorded) && left == "",
@@ -237,36 +237,36 @@ func TestStatsLogin(t *testing.T) {
 		const fixation = "fixation0123456789abcdefghijklmn"
 		planted := http.Header{"Cookie": {sessionCookie + "=" + fixation}}
 		newBrowser(t, s).loginIs(t, "the right password, with a session id chosen beforehand", http.StatusSeeOther, statsPasswordValue, planted)
-		fixed, err := s.get(ctx, statsPath, planted)
+		fixed, err := s.Get(ctx, statsPath, planted)
 		if err != nil {
 			t.Errorf("GET %s: %v", statsPath, err)
 		}
-		lacks(t, "the session id chosen beforehand is not logged in", loggedIn, string(fixed.body))
+		harness.Lacks(t, "the session id chosen beforehand is not logged in", loggedIn, string(fixed.Body))
 
 		// Caddy keeps the login's handle blocks ahead of stats.php's own only
 		// by their order in site.caddy. A GET with op=login reaches login.php,
 		// which sends it to the page; upstream would answer it with its form.
 		for _, path := range []string{statsPath + "?op=login", statsPath + "?op=x&op=login", statsPath + "?op=login&op=x"} {
 			what := fmt.Sprintf("GET %s reaches login.php", path)
-			resp, gerr := s.get(ctx, path, nil)
+			resp, gerr := s.Get(ctx, path, nil)
 			if gerr != nil {
 				checks.True(what, false, gerr.Error())
 				continue
 			}
-			harness.Equal(checks, what, "303 "+s.base+statsPath, fmt.Sprintf("%d %s", resp.status, redirectURL(s.base+path, resp)))
+			harness.Equal(checks, what, "303 "+s.Base+statsPath, fmt.Sprintf("%d %s", resp.Status, redirectURL(s.Base+path, resp)))
 		}
 
 		// Upstream's own check compares a login with stats_password, random
 		// and new on every start. Even sent that very value, by any way of
 		// writing a login, it decides nothing: every POST is login.php's,
 		// whose 403 and 429 upstream never sends, and nobody is logged in.
-		generated, err := telemetrySettings(ctx, s.c)
+		generated, err := telemetrySettings(ctx, s.C)
 		if err != nil {
 			generated = err.Error()
 		}
 		secret := statsPassword(generated)
 		if !hex64.MatchString(secret) {
-			checks.True("upstream's stats_password", false, "expected 64 hex digits, got "+clip(generated))
+			checks.True("upstream's stats_password", false, "expected 64 hex digits, got "+harness.Clip(generated))
 		} else {
 			for _, path := range statsPaths {
 				fresh := newBrowser(t, s)
@@ -281,7 +281,7 @@ func TestStatsLogin(t *testing.T) {
 				if err != nil {
 					t.Errorf("GET %s: %v", statsPath, err)
 				}
-				lacks(t, fmt.Sprintf("POST %s with upstream's stats_password logs nobody in", path), loggedIn, page)
+				harness.Lacks(t, fmt.Sprintf("POST %s with upstream's stats_password logs nobody in", path), loggedIn, page)
 			}
 		}
 		// and a path that starts at stats.php and leaves it never runs it,
@@ -291,7 +291,7 @@ func TestStatsLogin(t *testing.T) {
 				leavesStats(t, s, method, exit.path, exit.target, secret)
 			}
 		}
-		records(t, s.probe, "age-failures", "901")
+		harness.RunRecords(t, s.Probe, "age-failures", "901")
 	})
 
 	t.Run("changed", func(t *testing.T) {
@@ -299,7 +299,7 @@ func TestStatsLogin(t *testing.T) {
 		// bcrypt alone would also take the new one with anything after its
 		// 72nd byte.
 		long := strings.Repeat("0", 72)
-		s := serve(t, e, image, spec{port: portStatsLogin, volume: volume, env: map[string]string{
+		s := serve(t, e, image, spec{volume: volume, env: map[string]string{
 			"TELEMETRY":      "true",
 			"STATS_PASSWORD": long,
 		}})
@@ -314,8 +314,8 @@ func TestStatsLogin(t *testing.T) {
 // redirectURL is where resp, the answer to a request for target, sends
 // the client, as an absolute URL, or "" if it sends it nowhere: what
 // curl's %{redirect_url} prints.
-func redirectURL(target string, resp response) string {
-	location := resp.header.Get("Location")
+func redirectURL(target string, resp harness.Response) string {
+	location := resp.Header.Get("Location")
 	if location == "" {
 		return ""
 	}
