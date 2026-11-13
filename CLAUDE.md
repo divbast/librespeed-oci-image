@@ -121,9 +121,9 @@ breaking change.
   server its environment, and the two `$_SERVER` reads in `login.php`
   (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`), which
   are request data, not settings. The same read anywhere else fails, and
-  so does an exemption nothing matches. The switches take exactly `true` or `false`, and every
-  variable is checked before anything is written, so a typo stops the
-  start instead of meaning the default
+  so does an exemption nothing matches. The switches take exactly `true`
+  or `false`, and every variable is checked before anything is written,
+  so a typo stops the start instead of meaning the default
 - **`test/upstream-layout.sh` guards every upstream path and string the
   image relies on**: each path the fetch stage copies out of the checkout;
   the four fonts the licences label names, Open Sans in `results/` and
@@ -181,8 +181,9 @@ breaking change.
   under it. The FrankenPHP binary cannot surprise it: that moves only by a
   digest pull request. A new advisory against what is already shipped
   surfaces there as a code scanning alert, not a red run.
-  `.github/workflows/stall.yml`, through divbast/ci's `stall.yml`, fails each day that updates have stopped
-  flowing: a Renovate PR stuck, Renovate silent, or two slots lost in a row
+  `.github/workflows/stall.yml`, through divbast/ci's `stall.yml`, fails
+  each day that updates have stopped flowing: a Renovate PR stuck,
+  Renovate silent, or two slots lost in a row
 - **Every input the Containerfile names is pinned, but for the two apt
   packages the fetch stage installs.** LibreSpeed releases carry no assets,
   only GitHub's generated archives, which are not byte-stable, so
