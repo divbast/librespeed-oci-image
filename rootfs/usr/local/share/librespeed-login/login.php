@@ -10,9 +10,10 @@
  * never receives a password, and its own check against $stats_password
  * decides nothing.
  *
- * It checks the password against the hash the bootstrap writes from
- * STATS_PASSWORD, limits failures per client, and on success marks the
- * session the way stats.php reads it. It lives outside the served tree, and
+ * It refuses a login a browser says came from another site, checks the
+ * password against the hash the bootstrap writes from STATS_PASSWORD,
+ * limits failures per client, and on success marks the session the way
+ * stats.php reads it. It lives outside the served tree, and
  * Caddy reaches it only through that rewrite.
  */
 
@@ -77,6 +78,36 @@ function client(): string
     }
 
     return $client;
+}
+
+/**
+ * Whether a browser says this login was sent from another origin, as any
+ * page elsewhere can have its visitors' browsers post one: each would be
+ * counted against the visitor's own address, and five lock it out.
+ * Sec-Fetch-Site, which no page can set, decides when a browser sends it:
+ * only same-origin, and none, for a request the visitor made themselves,
+ * go on. A browser too old to send it still sends Origin, which must then
+ * name the host the login was sent to. A client that sends neither is no
+ * browser, and no page can make it post. It is Go's net/http
+ * CrossOriginProtection, as Caddy hands over the request.
+ */
+function fromAnotherOrigin(): bool
+{
+    $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? null;
+    if (is_string($site)) {
+        return $site !== 'same-origin' && $site !== 'none';
+    }
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+    if (!is_string($origin)) {
+        return false;
+    }
+    $host = $_SERVER['HTTP_HOST'] ?? null;
+    $parts = parse_url($origin);
+    if (!is_string($host) || !is_array($parts) || !isset($parts['host'])) {
+        return true;
+    }
+
+    return strcasecmp($parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : ''), $host) !== 0;
 }
 
 /**
@@ -226,6 +257,10 @@ function login(): never
     // A GET, as the address bar shows after a failed login, goes to the page
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         redirectToStats();
+    }
+    // Before anything is counted, or the password is looked at
+    if (fromAnotherOrigin()) {
+        respond(403, 'This login was sent from another site, and is refused.', false);
     }
 
     $client = bucket(client());

@@ -324,7 +324,16 @@ logs. The login:
   another is being checked gets an immediate 429, and is not counted;
 - answers a client already at its limit with its 429 before it touches that
   one-at-a-time check, so a client that is locked out cannot keep the check
-  busy for everyone else.
+  busy for everyone else;
+- refuses a login a browser says came from another site, with a 403, before
+  it is counted or its password looked at. Any page could otherwise have
+  its visitors' browsers post wrong passwords here, and lock out their own
+  addresses, the admin's among them. A browser's `Sec-Fetch-Site` decides:
+  only `same-origin`, and `none`, for an address the visitor typed in, go
+  on. A browser too old to send it must send an `Origin` naming the host
+  the login was sent to, so behind a proxy that rewrites `Host` such a
+  browser cannot log in. A client that sends neither header, such as curl,
+  is not a browser, and goes on.
 
 The client is the address the connection comes from, or, from a proxy
 `TRUSTED_PROXIES` names, the address its `X-Forwarded-For` gives.

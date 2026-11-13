@@ -116,12 +116,13 @@ breaking change.
   call of `getenv`, `envBool` or `envString`, or index of `$_ENV` or
   `$_SERVER`, whose name is not a literal, and on either read whole, as
   a loop over it reads it. It scans the image's four PHP files in Go,
-  without PHP, and allows five exemptions, each by file and by the
+  without PHP, and allows eight exemptions, each by file and by the
   function it is written in: `getenv($name)` in `envBool` and in
   `envString`, the bootstrap's top-level `getenv()`, which hands the
-  server its environment, and the two `$_SERVER` reads in `login.php`
-  (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`), which
-  are request data, not settings. The same read anywhere else fails, and
+  server its environment, and the five `$_SERVER` reads in `login.php`
+  (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`, and
+  `HTTP_SEC_FETCH_SITE`, `HTTP_ORIGIN` and `HTTP_HOST` in
+  `fromAnotherOrigin`), which are request data, not settings. The same read anywhere else fails, and
   so does an exemption nothing matches. The switches take exactly `true`
   or `false`, and every variable is checked before anything is written,
   so a typo stops the start instead of meaning the default
@@ -243,7 +244,10 @@ breaking change.
   limit is 5 failures per bucket in 900 s, IPv6 bucketed per /64; one
   password is checked at a time, under an `flock` on
   `/tmp/librespeed/stats-login.lock`; and a client already at its limit is
-  answered before it can take that lock
+  answered before it can take that lock. A login a browser says came
+  from another origin, by `Sec-Fetch-Site`, or by `Origin` when it sends
+  no `Sec-Fetch-Site`, is a 403 before anything is counted: any page could
+  otherwise have its visitors' browsers lock their own addresses out
 - **The client the limit counts is Caddy's `{client_ip}`**: the connection's
   address, or with `TRUSTED_PROXIES`, `X-Forwarded-For` read right to left
   and strict. A range with a prefix of 0 is refused: every client of its
