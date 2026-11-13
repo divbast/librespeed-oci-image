@@ -23,6 +23,9 @@ const RESULTS_DIR = '/var/www/librespeed/results';
 const DATA_DIR = '/data';
 const TELEMETRY_DB = DATA_DIR . '/telemetry.db';
 const SALT_FILE = DATA_DIR . '/idObfuscation_salt.php';
+// The salt as upstream's idObfuscation.php writes it, and ensureSalt()
+// too: four random bytes in hex
+const SALT_FORMAT = '/\A<\?php\n\n\$OBFUSCATION_SALT = 0x[0-9a-f]{8};\n\z/';
 // The stats login's: STATS_PASSWORD's hash, and the failures it counts
 const STATS_PASSWORD_HASH = DATA_DIR . '/stats-password.hash';
 const STATS_LOGIN_DB = DATA_DIR . '/stats-login.db';
@@ -181,6 +184,26 @@ function requireUsable(string $path, bool $write): void {
     }
     if (!is_file($path) || !is_readable($path) || ($write && !is_writable($path))) {
         fail("$path is there, but uid " . getmyuid() . ' cannot ' . ($write ? 'read and write' : 'read') . ' it');
+    }
+}
+
+/**
+ * A salt already there, as after a restore, in the one format upstream's
+ * idObfuscation.php writes. Upstream requires the file: one empty or cut
+ * short, as a full disk or a half-restored backup leaves it, sets no salt,
+ * which upstream reads as 0, or does not parse, and either way every id
+ * it hands out changes.
+ */
+function requireSaltFormat(): void {
+    clearstatcache(true, SALT_FILE);
+    if (!file_exists(SALT_FILE)) {
+        return;
+    }
+    $salt = @file_get_contents(SALT_FILE);
+    if ($salt === false || preg_match(SALT_FORMAT, $salt) !== 1) {
+        fail(SALT_FILE . ' is there, but is not a salt as upstream writes one, "<?php", a blank line, then'
+            . ' "$OBFUSCATION_SALT = 0x", 8 lower-case hex digits and ";": upstream would change every id it hands out.'
+            . ' Restore it with the telemetry.db it belongs to');
     }
 }
 
@@ -462,6 +485,7 @@ if ($telemetry) {
     requireUsable(TELEMETRY_DB, true);
     if ($obfuscateIds) {
         requireUsable(SALT_FILE, false);
+        requireSaltFormat();
     }
     if ($stats) {
         requireUsable(STATS_LOGIN_DB, true);

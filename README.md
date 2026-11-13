@@ -295,8 +295,11 @@ start changes it. Every share link handed out was made with it, and another
 salt would break them all. So it and `telemetry.db` are one restore unit: a
 database restored without its salt gets a new one at the next start, and
 every old link stops working. A salt uid 65532 cannot read stops the start,
-since upstream would read it as 0 and change every id. Turning obfuscation
-off leaves the salt where it is.
+since upstream would read it as 0 and change every id, and so does one not
+in the format upstream writes, `<?php`, a blank line, then
+`$OBFUSCATION_SALT = 0x` with 8 lower-case hex digits and `;`, such as one
+left empty or cut short by a full disk or a half-restored backup. Turning
+obfuscation off leaves the salt where it is.
 
 **The stats login.** Upstream's `stats.php` checks its password itself, as
 plain text. The image takes that away. Caddy sends upstream's login form,

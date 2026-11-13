@@ -263,7 +263,8 @@ breaking change.
   and `stats-login.db`
 - **Never rewrite the obfuscation salt.** Every share link handed out was
   made with it. It is created once, when telemetry and obfuscation are both
-  on and it is absent, and with `telemetry.db` it is one restore unit
+  on and it is absent, and with `telemetry.db` it is one restore unit. One
+  that is there and not in upstream's exact format stops the start
 - **The results database is made at start, by upstream's own `getPdo()`**,
   so its schema is always upstream's and `/healthz`'s `database` check passes
   on a fresh volume. The start is refused when `/data` is not writable, when
