@@ -15,32 +15,12 @@ import (
 )
 
 // TestBadTelemetryRefused checks a TELEMETRY that is neither true nor
-// false stops the start, and the log names it. It is [harness.Refuses]
-// under names of its own.
+// false stops the start, and the log names it.
 func TestBadTelemetryRefused(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	ctx := t.Context()
-	checks := harness.NewChecks(t)
-
-	const exits, names = "TELEMETRY=maybe: the container exits", "TELEMETRY=maybe: the log names TELEMETRY"
-	c, err := e.Start(ctx, t, refusing(image, map[string]string{"TELEMETRY": "maybe"}))
-	if err != nil {
-		checks.True(exits, false, err.Error())
-		checks.True(names, false, err.Error())
-		return
-	}
-	if code, werr := c.WaitExit(ctx, harness.ServeWithin); werr != nil {
-		checks.True(exits, false, werr.Error())
-	} else {
-		harness.Equal(checks, exits, refusedExit, code)
-	}
-	logs, err := c.Logs(ctx)
-	if err != nil {
-		checks.True(names, false, err.Error())
-		return
-	}
-	harness.Contains(t, names, "TELEMETRY", logs)
+	harness.Refuses(t, e, refusing(image, map[string]string{"TELEMETRY": "maybe"}), refusedExit,
+		"TELEMETRY=maybe", "TELEMETRY must be true or false")
 }
 
 // bootstrapRun is what the probe's bootstrap-with prints: the bootstrap's
