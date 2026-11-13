@@ -23,9 +23,12 @@ const RESULTS_DIR = '/var/www/librespeed/results';
 const DATA_DIR = '/data';
 const TELEMETRY_DB = DATA_DIR . '/telemetry.db';
 const SALT_FILE = DATA_DIR . '/idObfuscation_salt.php';
-// The salt as upstream's idObfuscation.php writes it, and ensureSalt()
-// too: four random bytes in hex
-const SALT_FORMAT = '/\A<\?php\n\n\$OBFUSCATION_SALT = 0x[0-9a-f]{8};\n\z/';
+// The salt in either shape upstream writes it: as idObfuscation.php does,
+// and ensureSalt() too, four random bytes in hex after a blank line; and
+// as its image's entrypoint does from OBFUSCATION_SALT, with no blank line
+// and the hex as it was given. Upstream uses 32 bits of it, so 8 hex
+// digits at most, and ; comes last, so a file cut short never matches.
+const SALT_FORMAT = '/\A<\?php\n\n?\$OBFUSCATION_SALT = 0x[0-9a-fA-F]{1,8};\n?\z/';
 // The stats login's: STATS_PASSWORD's hash, and the failures it counts
 const STATS_PASSWORD_HASH = DATA_DIR . '/stats-password.hash';
 const STATS_LOGIN_DB = DATA_DIR . '/stats-login.db';
@@ -188,11 +191,11 @@ function requireUsable(string $path, bool $write): void {
 }
 
 /**
- * A salt already there, as after a restore, in the one format upstream's
- * idObfuscation.php writes. Upstream requires the file: one empty or cut
- * short, as a full disk or a half-restored backup leaves it, sets no salt,
- * which upstream reads as 0, or does not parse, and either way every id
- * it hands out changes.
+ * A salt already there, as after a restore, or carried over from
+ * upstream's own image, in a shape upstream writes. Upstream requires the
+ * file: one empty or cut short, as a full disk or a half-restored backup
+ * leaves it, sets no salt, which upstream reads as 0, or does not parse,
+ * and either way every id it hands out changes.
  */
 function requireSaltFormat(): void {
     clearstatcache(true, SALT_FILE);
@@ -201,9 +204,10 @@ function requireSaltFormat(): void {
     }
     $salt = @file_get_contents(SALT_FILE);
     if ($salt === false || preg_match(SALT_FORMAT, $salt) !== 1) {
-        fail(SALT_FILE . ' is there, but is not a salt as upstream writes one, "<?php", a blank line, then'
-            . ' "$OBFUSCATION_SALT = 0x", 8 lower-case hex digits and ";": upstream would change every id it hands out.'
-            . ' Restore it with the telemetry.db it belongs to');
+        fail(SALT_FILE . ' is there, but is not a salt of 1 to 8 hex digits as upstream writes one: "<?php",'
+            . ' then "$OBFUSCATION_SALT = 0x", the digits and ";". Left empty or cut short, it would change every id'
+            . ' upstream hands out: restore it with the telemetry.db it belongs to. Of a longer salt upstream uses'
+            . ' the last 8 digits alone: write those');
     }
 }
 

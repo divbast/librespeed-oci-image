@@ -299,11 +299,20 @@ start changes it. Every share link handed out was made with it, and another
 salt would break them all. So it and `telemetry.db` are one restore unit: a
 database restored without its salt gets a new one at the next start, and
 every old link stops working. A salt uid 65532 cannot read stops the start,
-since upstream would read it as 0 and change every id, and so does one not
-in the format upstream writes, `<?php`, a blank line, then
-`$OBFUSCATION_SALT = 0x` with 8 lower-case hex digits and `;`, such as one
-left empty or cut short by a full disk or a half-restored backup. Turning
+since upstream would read it as 0 and change every id, and so does one that
+is not a salt as upstream writes one, `<?php`, then
+`$OBFUSCATION_SALT = 0x` with 1 to 8 hex digits and `;`, such as one left
+empty or cut short by a full disk or a half-restored backup. Turning
 obfuscation off leaves the salt where it is.
+
+To keep the share links of upstream's own image, carry its salt over with
+its results. Upstream's image keeps the salt in
+`/var/www/html/results/idObfuscation_salt.php`, written from
+`OBFUSCATION_SALT` when that is set. Put that file at
+`/data/idObfuscation_salt.php`, readable by uid 65532, and it is taken as
+it is, in either case and without the blank line this image writes.
+Upstream uses only the last 8 hex digits of a longer value, so write a
+longer one as those 8, and every id stays the same.
 
 **The stats login.** Upstream's `stats.php` checks its password itself, as
 plain text. The image takes that away. Caddy sends upstream's login form,

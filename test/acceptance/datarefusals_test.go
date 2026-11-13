@@ -68,11 +68,15 @@ func TestDataRefusals(t *testing.T) {
 		for _, salt := range []struct{ what, contents string }{
 			{"an empty salt", ""},
 			{"a salt cut short", "<?php\n\n$OBFUSCATION_SALT = 0x1f"},
+			// Upstream's entrypoint writes as many hex digits as it is given,
+			// and upstream uses the last 8 alone: more says more than the
+			// salt is, so it is written down as those 8
+			{"a salt of 9 hex digits", "<?php\n$OBFUSCATION_SALT = 0x1BA6C9260;\n"},
 		} {
 			phpOnVolume(t, e, image, volume, fmt.Sprintf(`file_put_contents("/data/idObfuscation_salt.php", base64_decode(%q));
 				chmod("/data/idObfuscation_salt.php", 0600);`, base64.StdEncoding.EncodeToString([]byte(salt.contents))))
 			harness.Refuses(t, e, onVolume(map[string]string{"TELEMETRY": "true", "ENABLE_ID_OBFUSCATION": "true"}), refusedExit,
-				"ENABLE_ID_OBFUSCATION=true with "+salt.what, "/data/idObfuscation_salt.php is there, but is not a salt as upstream writes one")
+				"ENABLE_ID_OBFUSCATION=true with "+salt.what, "/data/idObfuscation_salt.php is there, but is not a salt of 1 to 8 hex digits as upstream writes one")
 		}
 
 		// A database file SQLite does not recognise, as a disk fault or a

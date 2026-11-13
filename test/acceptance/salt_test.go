@@ -4,6 +4,7 @@
 package acceptance
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -47,7 +48,8 @@ func readSalt(t *testing.T, s *harness.Serving) (salt, error) {
 // TestSaltSurvives checks the obfuscation salt is made once, in upstream's
 // format and private to uid 65532, and that it and the results it
 // obfuscated survive a restart, and telemetry going off and on, so every
-// share link handed out keeps working.
+// share link handed out keeps working; and that a salt carried over from
+// upstream's own image is taken as it is.
 //
 //nolint:paralleltest,tparallel // each phase restarts the server on the volume the one before it wrote, so they run in turn
 func TestSaltSurvives(t *testing.T) {
@@ -125,4 +127,38 @@ func TestSaltSurvives(t *testing.T) {
 		sameSalt(t, s, "with telemetry on again")
 		resultIs(t, s, "with telemetry on again: GET /results/json.php?id="+id, id)
 	})
+
+	// A salt carried over by hand from upstream's own image, whose
+	// entrypoint writes OBFUSCATION_SALT with no blank line and the hex as
+	// it was given: here in capitals, 4 digits long, and with no newline
+	// to end the file. It is taken as it is, and is the same 32-bit salt
+	// as the one this image writes for that value (LS-11).
+	const carried = "<?php\n$OBFUSCATION_SALT = 0xAB1F;"
+	var second string
+	t.Run("carried-over", func(t *testing.T) {
+		writeSalt(t, e, image, volume, carried)
+		s := serve(t, e, image, spec{volume: volume, env: obfuscated})
+		second, _ = recordResult(t, s, "a result under the salt upstream's image wrote")
+		harness.NewChecks(t).True("the id is obfuscated", obfuscatedID.MatchString(second), fmt.Sprintf("%q", second))
+		const kept = "the salt upstream's image wrote is left as it is"
+		if again, err := readSalt(t, s); err != nil {
+			harness.NewChecks(t).True(kept, false, err.Error())
+		} else {
+			harness.Equal(harness.NewChecks(t), kept, carried, again.Contents)
+		}
+	})
+
+	t.Run("rewritten", func(t *testing.T) {
+		writeSalt(t, e, image, volume, "<?php\n\n$OBFUSCATION_SALT = 0x0000ab1f;\n")
+		s := serve(t, e, image, spec{volume: volume, env: obfuscated})
+		resultIs(t, s, "with that salt as this image writes it: GET /results/json.php?id="+second, second)
+	})
+}
+
+// writeSalt writes salt into volume's obfuscation salt, as uid 65532,
+// which owns it.
+func writeSalt(t *testing.T, e harness.Engine, image, volume, salt string) {
+	t.Helper()
+	phpOnVolume(t, e, image, volume, fmt.Sprintf(`file_put_contents("/data/idObfuscation_salt.php", base64_decode(%q));`,
+		base64.StdEncoding.EncodeToString([]byte(salt))))
 }
