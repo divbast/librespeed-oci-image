@@ -29,7 +29,7 @@ const healthy = "200 ok"
 func TestHealthFromHost(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portHealthOff, healthPort: portHealthOffHealth})
+	s := serve(t, e, image, spec{health: true})
 	healthzIs(t, s, "telemetry off: GET :8081/healthz", healthy)
 }
 
@@ -44,35 +44,35 @@ func TestHealthFailures(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 	volume := newVolume(t, e)
-	sp := spec{port: portHealthOn, healthPort: portHealthOnHealth, volume: volume, env: telemetryOn()}
+	sp := spec{health: true, volume: volume, env: telemetryOn()}
 
 	t.Run("telemetry-on", func(t *testing.T) {
 		s := serve(t, e, image, sp)
 		checks := harness.NewChecks(t)
 		ctx := t.Context()
 		const fresh = "telemetry on, a fresh volume"
-		tableIs(t, s.c, fresh+": no result has been recorded", emptyResultsTable)
+		tableIs(t, s.C, fresh+": no result has been recorded", emptyResultsTable)
 		healthzIs(t, s, fresh+": GET :8081/healthz", healthy)
-		if code, out, err := runHealthProbe(ctx, s.c); err != nil {
+		if code, out, err := runHealthProbe(ctx, s.C); err != nil {
 			checks.True(fresh+": "+healthProbe+" exits 0", false, err.Error())
 		} else {
 			checks.True(fresh+": "+healthProbe+" exits 0", code == 0, fmt.Sprintf("exit status %d: %s", code, harness.Clip(out)))
 		}
-		engineHealthy(t, e, image, s.c, fresh)
+		engineHealthy(t, e, image, s.C, fresh)
 
 		// A database the server cannot write would take results and record
 		// none of them
-		chmodDB(t, s.c, 0o444)
+		chmodDB(t, s.C, 0o444)
 		healthFails(t, s, "with /data/telemetry.db read-only", "database")
-		chmodDB(t, s.c, 0o644)
+		chmodDB(t, s.C, 0o644)
 		healthzIs(t, s, "writable again: GET :8081/healthz", healthy)
-		harness.RunRecords(t, s.probe, "damage-db")
+		harness.RunRecords(t, s.Probe, "damage-db")
 		healthFails(t, s, "after damage-db", "database")
-		harness.RunRecords(t, s.probe, "remove-db")
+		harness.RunRecords(t, s.Probe, "remove-db")
 		healthFails(t, s, "after remove-db", "database")
 		// Asked, twice over, the check made no database, so a missing one
 		// stays missing until upstream records a result
-		harness.IsFile(t, s.c, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
+		harness.IsFile(t, s.C, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
 	})
 
 	t.Run("operator-ini", func(t *testing.T) {
@@ -94,21 +94,17 @@ func TestHealthFailures(t *testing.T) {
 
 // healthz sends GET /healthz to s's published health port, and returns
 // the status and the body, less its final newline.
-func healthz(ctx context.Context, s *served) (status int, body string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.healthBase+"/healthz", http.NoBody)
+func healthz(ctx context.Context, s *harness.Serving) (status int, body string, err error) {
+	resp, err := s.Health().Get(ctx, "/healthz", nil)
 	if err != nil {
 		return 0, "", err
 	}
-	resp, err := send(harness.HostClient(), req)
-	if err != nil {
-		return 0, "", err
-	}
-	return resp.status, strings.TrimSuffix(string(resp.body), "\n"), nil
+	return resp.Status, strings.TrimSuffix(string(resp.Body), "\n"), nil
 }
 
 // healthzIs checks GET :8081/healthz, from the host, answers want, its
 // status and body as one.
-func healthzIs(t *testing.T, s *served, what, want string) {
+func healthzIs(t *testing.T, s *harness.Serving, what, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	status, body, err := healthz(t.Context(), s)
@@ -123,7 +119,7 @@ func healthzIs(t *testing.T, s *served, what, want string) {
 // of its own, and that the probe exits 1, naming the /healthz half and
 // that check. The getIP.php half, still sound, goes unnamed. It returns
 // the body of the 503.
-func healthFails(t *testing.T, s *served, what, check string) string {
+func healthFails(t *testing.T, s *harness.Serving, what, check string) string {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	ctx := t.Context()
@@ -139,7 +135,7 @@ func healthFails(t *testing.T, s *served, what, check string) string {
 
 	exits := fmt.Sprintf("%s: %s exits 1", what, healthProbe)
 	only := fmt.Sprintf("%s: the probe names the /healthz half and %s, and only that half", what, check)
-	code, out, err := runHealthProbe(ctx, s.c)
+	code, out, err := runHealthProbe(ctx, s.C)
 	if err != nil {
 		checks.True(exits, false, err.Error())
 		checks.True(only, false, err.Error())

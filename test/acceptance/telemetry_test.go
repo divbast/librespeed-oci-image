@@ -64,15 +64,15 @@ func TestTelemetry(t *testing.T) {
 	var first string
 
 	t.Run("recording", func(t *testing.T) {
-		s := serve(t, e, image, spec{port: portTelemetry, volume: volume, env: telemetryOn()})
+		s := serve(t, e, image, spec{volume: volume, env: telemetryOn()})
 		checks := harness.NewChecks(t)
 		ctx := t.Context()
 
 		// Made at start by upstream's own code, before any result: the
 		// health check needs it, and upstream would make it only with the
 		// first result
-		tableIs(t, s.c, "/data/telemetry.db at start: upstream's table, with no rows", emptyResultsTable)
-		harness.LogContains(t, s.c, "the log says the bootstrap created /data/telemetry.db", "created /data/telemetry.db")
+		tableIs(t, s.C, "/data/telemetry.db at start: upstream's table, with no rows", emptyResultsTable)
+		harness.LogContains(t, s.C, "the log says the bootstrap created /data/telemetry.db", "created /data/telemetry.db")
 		levelIs(t, s, "settings.json telemetry_level", "basic")
 		// The worker posts telemetry_extra in every record, wrapped with
 		// the server's name, so the image leaves it to the worker
@@ -82,10 +82,10 @@ func TestTelemetry(t *testing.T) {
 			_, has := settings["telemetry_extra"]
 			harness.Equal(checks, "settings.json sets no telemetry_extra", false, has)
 		}
-		stateIs(t, s.c, "state.json", `{"telemetry":true}`)
+		stateIs(t, s.C, "state.json", `{"telemetry":true}`)
 
 		const shaped = "telemetry_settings.php, with stats_password 64 hex digits"
-		generated, err := telemetrySettings(ctx, s.c)
+		generated, err := telemetrySettings(ctx, s.C)
 		if err != nil {
 			checks.True(shaped, false, err.Error())
 		} else {
@@ -107,7 +107,7 @@ func TestTelemetry(t *testing.T) {
 		}
 		const unseen = "the log never shows stats_password"
 		if password := statsPassword(generated); password != "" {
-			harness.LogLacks(t, s.c, unseen, password)
+			harness.LogLacks(t, s.C, unseen, password)
 		} else {
 			checks.True(unseen, false, "there is no stats_password to look for: "+harness.Clip(generated))
 		}
@@ -126,7 +126,7 @@ func TestTelemetry(t *testing.T) {
 		pngIs(t, s, "GET /results/index.php?id="+first, "/results/index.php?id="+first)
 		// The modern UI's share link
 		pngIs(t, s, fmt.Sprintf("GET /results/?id=%s&style=modern", first), fmt.Sprintf("/results/?id=%s&style=modern", first))
-		harness.IsFile(t, s.c, "/data/telemetry.db", "present", telemetryDB)
+		harness.IsFile(t, s.C, "/data/telemetry.db", "present", telemetryDB)
 		rowIs(t, s, fmt.Sprintf("row %s as stored, unredacted", first), first,
 			[]string{"ip", "dl", "extra", "log"},
 			fmt.Sprintf(`{"ip":%q,"dl":%q,"extra":"{\"server\":\"local\"}","log":"","ip_in_ispinfo":true}`, resultClient, resultDL))
@@ -143,7 +143,7 @@ func TestTelemetry(t *testing.T) {
 			"/results/index.php/.%2e/telemetry_db.php", "/results/json.php/../../results/stats.php",
 			"/results/telemetry.php/../idObfuscation_salt.php",
 		} {
-			statusIs(t, s, "GET "+path, http.StatusNotFound, path)
+			harness.StatusIs(t, s, "GET "+path, http.StatusNotFound, path)
 		}
 		// and a path that resolves onto an allowed route runs that route's
 		// script
@@ -160,7 +160,7 @@ func TestTelemetry(t *testing.T) {
 	t.Run("redacted", func(t *testing.T) {
 		// json.php never shows the address, so only the row, which rowIs
 		// reads, can show it is gone
-		s := serve(t, e, image, spec{port: portTelemetry, volume: volume, env: map[string]string{
+		s := serve(t, e, image, spec{volume: volume, env: map[string]string{
 			"TELEMETRY":           "true",
 			"REDACT_IP_ADDRESSES": "true",
 		}})
@@ -168,7 +168,7 @@ func TestTelemetry(t *testing.T) {
 		ctx := t.Context()
 
 		const redact = "telemetry_settings.php with REDACT_IP_ADDRESSES=true"
-		if generated, err := telemetrySettings(ctx, s.c); err != nil {
+		if generated, err := telemetrySettings(ctx, s.C); err != nil {
 			checks.True(redact, false, err.Error())
 		} else {
 			got, err := jqPick(generated, "redact_ip_addresses")
@@ -185,7 +185,7 @@ func TestTelemetry(t *testing.T) {
 
 		// What the health check sees. A damaged database records nothing;
 		// once it is gone, upstream makes a new one with the next result.
-		harness.RunRecords(t, s.probe, "damage-db")
+		harness.RunRecords(t, s.Probe, "damage-db")
 		got, err := postResult(ctx, s)
 		if err != nil {
 			checks.True("POST /results/telemetry.php to a damaged database: curl exit, status", false, err.Error())
@@ -194,7 +194,7 @@ func TestTelemetry(t *testing.T) {
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database: curl exit, status", http.StatusOK, got.status)
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database records nothing", "", got.body)
 		}
-		harness.RunRecords(t, s.probe, "remove-db")
+		harness.RunRecords(t, s.Probe, "remove-db")
 		id, _ := recordResult(t, s, "a result after remove-db")
 		harness.Equal(checks, "the first result in a new database", "1", id)
 	})
@@ -217,9 +217,9 @@ type posted struct {
 // postResult posts the result a browser would, for [resultClient]: the
 // ISP info getIP.php gives that client, as the worker wraps it, then the
 // speeds.
-func postResult(ctx context.Context, s *served) (posted, error) {
+func postResult(ctx context.Context, s *harness.Serving) (posted, error) {
 	header := http.Header{"X-Forwarded-For": {resultClient}}
-	ip, err := s.get(ctx, "/backend/getIP.php?isp=true&distance=km&r=0.5", header)
+	ip, err := s.Get(ctx, "/backend/getIP.php?isp=true&distance=km&r=0.5", header)
 	if err != nil {
 		return posted{}, err
 	}
@@ -228,8 +228,8 @@ func postResult(ctx context.Context, s *served) (posted, error) {
 		ProcessedString string `json:"processedString"`
 		RawIspInfo      any    `json:"rawIspInfo"`
 	}
-	if jerr := json.Unmarshal(ip.body, &answer); jerr != nil {
-		return posted{}, fmt.Errorf("getIP.php?isp=true answered %d with what is not its JSON: %w: %s", ip.status, jerr, harness.Clip(string(ip.body)))
+	if jerr := json.Unmarshal(ip.Body, &answer); jerr != nil {
+		return posted{}, fmt.Errorf("getIP.php?isp=true answered %d with what is not its JSON: %w: %s", ip.Status, jerr, harness.Clip(string(ip.Body)))
 	}
 	ispinfo, err := encode(answer)
 	if err != nil {
@@ -247,17 +247,17 @@ func postResult(ctx context.Context, s *served) (posted, error) {
 	header.Set("Content-Type", contentType)
 	header.Set("User-Agent", browserUA)
 	header.Set("Accept-Language", "pt-BR,pt;q=0.9")
-	resp, err := s.do(ctx, harness.HostClient(), http.MethodPost, "/results/telemetry.php?r=0.42", header, body)
+	resp, err := s.Do(ctx, harness.HostClient(), http.MethodPost, "/results/telemetry.php?r=0.42", header, body)
 	if err != nil {
 		return posted{}, err
 	}
-	return posted{status: resp.status, sent: len(body), body: string(resp.body)}, nil
+	return posted{status: resp.Status, sent: len(body), body: string(resp.Body)}, nil
 }
 
 // recordResult posts the result, and checks telemetry.php answers with the
 // id it recorded it under, which it returns, with the bytes of the body
 // sent. The check's name holds the answer.
-func recordResult(t *testing.T, s *served, what string) (id string, sent int) {
+func recordResult(t *testing.T, s *harness.Serving, what string) (id string, sent int) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	got, err := postResult(t.Context(), s)
@@ -291,19 +291,19 @@ func multipartForm(fields [][2]string) (body []byte, contentType string) {
 
 // resultIs checks json.php's answer for id, less the timestamp no test can
 // know, is resultJSON.
-func resultIs(t *testing.T, s *served, what, id string) {
+func resultIs(t *testing.T, s *harness.Serving, what, id string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
-	resp, err := s.get(t.Context(), "/results/json.php?id="+id, nil)
+	resp, err := s.Get(t.Context(), "/results/json.php?id="+id, nil)
 	if err != nil {
 		checks.True(what, false, err.Error())
 		return
 	}
-	got, err := jqEdit(string(resp.body), func(fs []field) []field {
+	got, err := jqEdit(string(resp.Body), func(fs []field) []field {
 		return slicesDeleteKey(fs, "timestamp")
 	})
 	if err != nil {
-		checks.True(what, false, fmt.Sprintf("%d: %v", resp.status, err))
+		checks.True(what, false, fmt.Sprintf("%d: %v", resp.Status, err))
 		return
 	}
 	harness.Equal(checks, what, resultJSON, got)
@@ -315,27 +315,27 @@ const pngMagic = "89504e470d0a1a0a"
 // pngIs checks GET path answers a PNG: 200 image/png, starting with PNG's
 // signature. index.php answers 200 with an empty body for an id it cannot
 // find.
-func pngIs(t *testing.T, s *served, what, path string) {
+func pngIs(t *testing.T, s *harness.Serving, what, path string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	what += ": status, type, signature"
-	resp, err := s.get(t.Context(), path, nil)
+	resp, err := s.Get(t.Context(), path, nil)
 	if err != nil {
 		checks.True(what, false, err.Error())
 		return
 	}
-	magic := hex.EncodeToString(resp.body[:min(len(resp.body), len(pngMagic)/2)])
+	magic := hex.EncodeToString(resp.Body[:min(len(resp.Body), len(pngMagic)/2)])
 	harness.Equal(checks, what, "200 image/png "+pngMagic,
-		fmt.Sprintf("%d %s %s", resp.status, resp.header.Get("Content-Type"), magic))
+		fmt.Sprintf("%d %s %s", resp.Status, resp.Header.Get("Content-Type"), magic))
 }
 
 // rowIs checks the row id as the probe's read-row reads it: the fields
 // named, in that order, then whether its ispinfo holds resultClient, as
 // ip_in_ispinfo.
-func rowIs(t *testing.T, s *served, what, id string, keys []string, want string) {
+func rowIs(t *testing.T, s *harness.Serving, what, id string, keys []string, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
-	row, err := output(t.Context(), s.probe, "read-row", id)
+	row, err := output(t.Context(), s.Probe, "read-row", id)
 	if err != nil {
 		checks.True(what, false, err.Error())
 		return

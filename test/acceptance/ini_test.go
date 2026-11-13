@@ -53,7 +53,7 @@ func value[T any](v *T) string {
 func TestPHPSettings(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portINI})
+	s := serve(t, e, image, spec{})
 	checks := harness.NewChecks(t)
 
 	if ini, err := readINI(t, s); err != nil {
@@ -95,18 +95,18 @@ func TestPHPSettings(t *testing.T) {
 	}
 
 	const unnamed = "responses do not name PHP and its version"
-	if resp, err := s.get(t.Context(), "/backend/getIP.php", nil); err != nil {
+	if resp, err := s.Get(t.Context(), "/backend/getIP.php", nil); err != nil {
 		checks.True(unnamed, false, err.Error())
 	} else {
-		powered := resp.header.Values("X-Powered-By")
+		powered := resp.Header.Values("X-Powered-By")
 		checks.True(unnamed, len(powered) == 0, fmt.Sprintf("X-Powered-By: %q", powered))
 	}
 }
 
 // readINI runs the probe's php-ini in s.
-func readINI(t *testing.T, s *served) (phpINI, error) {
+func readINI(t *testing.T, s *harness.Serving) (phpINI, error) {
 	t.Helper()
-	res, err := s.probe.Output(t.Context(), "php-ini")
+	res, err := s.Probe.Output(t.Context(), "php-ini")
 	if err != nil {
 		return phpINI{}, err
 	}
@@ -123,9 +123,9 @@ func readINI(t *testing.T, s *served) (phpINI, error) {
 // serverLogging returns, as JSON, where the running server's own config
 // sends PHP's log and the default log, whether the default leaves PHP's
 // out, and where the speed test's own access log goes.
-func serverLogging(t *testing.T, s *served) (string, error) {
+func serverLogging(t *testing.T, s *harness.Serving) (string, error) {
 	t.Helper()
-	res, err := s.c.Exec(t.Context(), nil, harness.FrankenPHP, "adapt", "--config", "/etc/frankenphp/Caddyfile")
+	res, err := s.C.Exec(t.Context(), nil, harness.FrankenPHP, "adapt", "--config", "/etc/frankenphp/Caddyfile")
 	if err != nil {
 		return "", err
 	}

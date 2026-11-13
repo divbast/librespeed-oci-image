@@ -38,7 +38,7 @@ type uploaded struct {
 func TestUploads(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portUploads})
+	s := serve(t, e, image, spec{})
 
 	for _, tt := range []struct {
 		tag, what, contentType string
@@ -48,7 +48,7 @@ func TestUploads(t *testing.T) {
 		// Content-Type
 		{tag: "6-untyped", what: "POST /backend/empty.php, 20 MiB with no Content-Type, as browsers send it"},
 	} {
-		checkUpload(t, s, tt.tag, tt.what, s.upload(t.Context(), tt.tag, tt.contentType))
+		checkUpload(t, s, tt.tag, tt.what, upload(t.Context(), s, tt.tag, tt.contentType))
 	}
 }
 
@@ -58,26 +58,26 @@ func TestUploads(t *testing.T) {
 func TestParallelUploads(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portParallelUploads})
+	s := serve(t, e, image, spec{})
 
 	results := make([]uploaded, 3)
 	var wg sync.WaitGroup
 	for i := range results {
 		wg.Go(func() {
-			results[i] = s.upload(t.Context(), fmt.Sprintf("7-%d", i+1), "application/octet-stream")
+			results[i] = upload(t.Context(), s, fmt.Sprintf("7-%d", i+1), "application/octet-stream")
 		})
 	}
 	wg.Wait()
 	for i, got := range results {
 		checkUpload(t, s, fmt.Sprintf("7-%d", i+1), fmt.Sprintf("parallel upload %d of %d", i+1, len(results)), got)
 	}
-	statusIs(t, s, "/backend/getIP.php after the uploads", http.StatusOK, "/backend/getIP.php")
+	harness.StatusIs(t, s, "/backend/getIP.php after the uploads", http.StatusOK, "/backend/getIP.php")
 }
 
 // checkUpload checks the upload tagged tag arrived whole. An upload the
 // server stops reading half way still ends in a 200, so only the byte
 // counts on both sides show it arrived whole.
-func checkUpload(t *testing.T, s *served, tag, what string, got uploaded) {
+func checkUpload(t *testing.T, s *harness.Serving, tag, what string, got uploaded) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	// The bash suite's name, which said what curl reported
@@ -90,7 +90,7 @@ func checkUpload(t *testing.T, s *served, tag, what string, got uploaded) {
 	}
 
 	read := what + ": bytes the server read"
-	n, err := bytesRead(t.Context(), s.c, uploadURI(tag))
+	n, err := bytesRead(t.Context(), s.C, uploadURI(tag))
 	if err != nil {
 		checks.True(read, false, err.Error())
 		return
@@ -107,9 +107,9 @@ func uploadURI(tag string) string {
 // upload posts uploadBytes of zeros to empty.php, tagged, with
 // contentType, or none when it is empty. Browsers send no Expect:
 // 100-continue, and neither does this.
-func (s *served) upload(ctx context.Context, tag, contentType string) uploaded {
+func upload(ctx context.Context, s *harness.Serving, tag, contentType string) uploaded {
 	body := &countingBody{r: io.LimitReader(zeros{}, uploadBytes), closed: make(chan struct{})}
-	req, err := s.request(ctx, http.MethodPost, uploadURI(tag), body)
+	req, err := request(ctx, s, http.MethodPost, uploadURI(tag), body)
 	if err != nil {
 		return uploaded{err: err}
 	}
@@ -129,7 +129,7 @@ func (s *served) upload(ctx context.Context, tag, contentType string) uploaded {
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
-	return uploaded{status: resp.status, sent: body.n.Load(), err: err}
+	return uploaded{status: resp.Status, sent: body.n.Load(), err: err}
 }
 
 // zeros reads as an endless run of zero bytes.

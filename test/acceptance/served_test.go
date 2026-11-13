@@ -4,7 +4,6 @@
 package acceptance
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,170 +39,71 @@ var serverArgv = []string{harness.FrankenPHP, "run", "--config", "/etc/frankenph
 // it and a Podman user passes it with --health-cmd.
 var healthCmd = []string{harness.FrankenPHP, "php-cli", "/usr/local/bin/librespeed-health"}
 
-// serveWithin bounds how long a container may take to serve, and
-// attemptWithin each request while it waits.
-const (
-	serveWithin   = time.Minute
-	attemptWithin = 5 * time.Second
-)
-
 // getIPLoopback is what getIP.php answers a client on loopback.
 const getIPLoopback = `{"processedString":"127.0.0.1","rawIspInfo":""}`
-
-// The host port each test that publishes the speed test publishes it on,
-// and the health port where a test publishes that too. The tests run at
-// once, so no two share one.
-const (
-	portNoData = 18290 + iota
-	portINI
-	portRoutes
-	portDotSegments
-	portEndpoints
-	portUploads
-	portParallelUploads
-	portHostile
-	portTelemetryOff
-	portSwitchesIgnored
-	portTelemetry
-	portSalt
-	portStatsOff
-	portStatsIgnored
-	portStatsLogin
-	portLockout
-	portLockRelease
-	portProxyList
-	portHealthOff
-	portHealthOffHealth
-	portHealthOn
-	portHealthOnHealth
-)
-
-// served is a container serving the speed test under the contract, with
-// its app port published on the host's loopback.
-type served struct {
-	c *harness.Container
-	// probe is installed once the server is serving.
-	probe *harness.Probe
-	// base is the speed test's URL from the host, and healthBase the
-	// health port's, when it is published.
-	base, healthBase string
-}
 
 // spec is how a test runs a container, beyond the contract every
 // container here runs under.
 type spec struct {
-	// port is the host port the app port is published on. healthPort,
-	// when set, is the one the health port is published on, which a
-	// deployment keeps unpublished; it also has Podman run the health
-	// check, which a Podman user is told to pass as --health-cmd.
-	port, healthPort int
-	env              map[string]string
+	env map[string]string
 	// volume, when set, is a volume the test made, mounted at /data.
 	volume string
 	// network, when set, is a network the test made, and ip a fixed
 	// address on it. Unset, the container gets a network of its own.
 	network, ip string
+	// health publishes the health port too, which a deployment keeps
+	// unpublished. It also has Podman run the health check, which a Podman
+	// user is told to pass as --health-cmd.
+	health bool
 }
 
-// start starts image under the contract, as sp says. It returns once the
-// engine has started the container; [served.wait] waits for the server.
-func start(t *testing.T, e harness.Engine, image string, sp spec) (*served, error) {
-	t.Helper()
-	ctx := t.Context()
-	network := sp.network
-	if network == "" {
-		var err error
-		if network, err = e.Network(ctx, t, "", "", false); err != nil {
-			return nil, err
-		}
-	}
-	run := &harness.RunSpec{
-		Image:   image,
-		Network: network,
-		IP:      sp.ip,
-		Confine: harness.Contract(tmpfsSize),
-		Env:     sp.env,
-		Publish: []string{fmt.Sprintf("127.0.0.1:%d:%d", sp.port, appPort)},
+// serveSpec is sp as [harness.Engine.Serve] takes it: image under the
+// contract, and the probe with LibreSpeed's own subcommands. Serve
+// publishes the app port, and the health port when sp says so, on the
+// host's loopback at a port the engine picks, so the tests, which run at
+// once, never ask for the same one.
+func (sp spec) serveSpec(image string) *harness.ServeSpec {
+	ss := &harness.ServeSpec{
+		Run: harness.RunSpec{
+			Image:   image,
+			Network: sp.network,
+			IP:      sp.ip,
+			Confine: harness.Contract(tmpfsSize),
+			Env:     sp.env,
+		},
+		AppPort:  appPort,
+		ProbeApp: probe.App,
 	}
 	if sp.volume != "" {
-		run.Mounts = onData(sp.volume)
+		ss.Run.Mounts = onData(sp.volume)
 	}
-	s := &served{base: fmt.Sprintf("http://127.0.0.1:%d", sp.port)}
-	if sp.healthPort != 0 {
-		run.Publish = append(run.Publish, fmt.Sprintf("127.0.0.1:%d:%d", sp.healthPort, healthPort))
-		run.HealthCmd = healthCmd
-		s.healthBase = fmt.Sprintf("http://127.0.0.1:%d", sp.healthPort)
+	if sp.health {
+		ss.HealthPort = healthPort
+		ss.Run.HealthCmd = healthCmd
 	}
-	c, err := e.Start(ctx, t, run)
-	if err != nil {
-		return nil, err
-	}
-	s.c = c
-	return s, nil
+	return ss
 }
 
-// serve starts image as [start] does, then waits for GET / to answer. It
-// fails t at once if the server never serves, since every check after
-// would fail for that one reason.
-func serve(t *testing.T, e harness.Engine, image string, sp spec) *served {
+// serve serves image as sp says, with [harness.Engine.Serve]: it returns
+// once GET / answers and the probe is installed. It fails t at once if
+// the server never serves, since every check after would fail for that
+// one reason.
+func serve(t *testing.T, e harness.Engine, image string, sp spec) *harness.Serving {
 	t.Helper()
-	s, err := start(t, e, image, sp)
-	if err == nil {
-		err = s.wait(t.Context(), "/")
-	}
+	s, err := e.Serve(t.Context(), t, sp.serveSpec(image))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 
-// wait asks for GET path from the host once a second until any status
-// comes back, then installs the probe. A container that stops first, or
-// one still not serving after serveWithin, is an error carrying its log,
-// so a server that died says why.
-func (s *served) wait(ctx context.Context, path string) error {
-	deadline := time.Now().Add(serveWithin)
-	for {
-		attempt, cancel := context.WithTimeout(ctx, attemptWithin)
-		_, err := s.get(attempt, path, nil)
-		cancel()
-		if err == nil {
-			break
-		}
-		ins, ierr := s.c.Inspect(ctx)
-		switch {
-		case ierr != nil:
-			return fmt.Errorf("%w; and then: %w", err, ierr)
-		case !ins.State.Running:
-			return harness.WithLog(ctx, s.c, fmt.Errorf("container %s stopped, exit status %d, before GET %s answered", s.c, ins.State.ExitCode, path))
-		case !time.Now().Before(deadline):
-			return harness.WithLog(ctx, s.c, fmt.Errorf("GET %s%s got no answer within %s: %w", s.base, path, serveWithin, err))
-		}
-		if err := harness.Pause(ctx, time.Second); err != nil {
-			return err
-		}
-	}
-	p, err := harness.InstallProbe(ctx, s.c, probe.App)
-	if err != nil {
-		return err
-	}
-	s.probe = p
-	return nil
-}
-
-// response is the answer to one request from the host.
-type response struct {
-	status int
-	header http.Header
-	body   []byte
-}
-
-// request returns a request from the host for path, its query included,
-// which goes out exactly as written, as curl's --path-as-is sends it: no
-// dot segment resolved and no escape undone. A path Go would send any
-// other way is an error.
-func (s *served) request(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, s.base+path, body)
+// request returns a request from the host for path on s's app port, its
+// query included, which goes out exactly as written, as
+// [harness.Serving.Do] sends one: no dot segment resolved and no escape
+// undone. A path Go would send any other way is an error. It is for a
+// body Do cannot send, one streamed as the client reads it.
+func request(ctx context.Context, s *harness.Serving, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.Base+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -213,76 +113,37 @@ func (s *served) request(ctx context.Context, method, path string, body io.Reade
 	return req, nil
 }
 
-// get sends GET path from the host, with header, and reads the answer.
-func (s *served) get(ctx context.Context, path string, header http.Header) (response, error) {
-	return s.do(ctx, harness.HostClient(), http.MethodGet, path, header, nil)
+// send sends req with client, and reads the whole answer.
+func send(client *http.Client, req *http.Request) (harness.Response, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return harness.Response{}, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err = errors.Join(err, resp.Body.Close()); err != nil {
+		return harness.Response{}, fmt.Errorf("%s %s: reading the answer: %w", req.Method, req.URL.RequestURI(), err)
+	}
+	return harness.Response{Status: resp.StatusCode, Header: resp.Header, Body: body}, nil
 }
 
 // formType is how a browser posts a form, and how upstream's login form
 // and curl's --data-urlencode send one.
 const formType = "application/x-www-form-urlencoded"
 
-// postForm sends POST path from the host with client, header and form,
-// and reads the answer.
-func (s *served) postForm(ctx context.Context, client *http.Client, path string, header http.Header, form url.Values) (response, error) {
+// postForm sends POST path to s from the host with client, header and
+// form, and reads the answer.
+func postForm(ctx context.Context, s *harness.Serving, client *http.Client, path string, header http.Header, form url.Values) (harness.Response, error) {
 	h := http.Header{"Content-Type": {formType}}
 	maps.Copy(h, header)
-	return s.do(ctx, client, http.MethodPost, path, h, []byte(form.Encode()))
-}
-
-// do sends method path from the host with client, header and body, and
-// reads the answer. header goes out as written: a name Go would put in
-// canonical form keeps the case it was given.
-func (s *served) do(ctx context.Context, client *http.Client, method, path string, header http.Header, body []byte) (response, error) {
-	var r io.Reader
-	if body != nil {
-		r = bytes.NewReader(body)
-	}
-	req, err := s.request(ctx, method, path, r)
-	if err != nil {
-		return response{}, err
-	}
-	maps.Copy(req.Header, header)
-	return send(client, req)
-}
-
-// send sends req with client, and reads the whole answer.
-func send(client *http.Client, req *http.Request) (response, error) {
-	resp, err := client.Do(req)
-	if err != nil {
-		return response{}, err
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err = errors.Join(err, resp.Body.Close()); err != nil {
-		return response{}, fmt.Errorf("%s %s: reading the answer: %w", req.Method, req.URL.RequestURI(), err)
-	}
-	return response{status: resp.StatusCode, header: resp.Header, body: body}, nil
-}
-
-// statusIs checks GET path, from the host, answers want.
-func statusIs(t *testing.T, s *served, what string, want int, path string) {
-	t.Helper()
-	resp, err := s.get(t.Context(), path, nil)
-	answers(t, what, want, resp, err)
-}
-
-// answers checks a request got an answer, and that its status is want.
-func answers(t *testing.T, what string, want int, resp response, err error) {
-	t.Helper()
-	checks := harness.NewChecks(t)
-	if err != nil {
-		checks.True(what, false, err.Error())
-		return
-	}
-	harness.Equal(checks, what, want, resp.status)
+	return s.Do(ctx, client, http.MethodPost, path, h, []byte(form.Encode()))
 }
 
 // loopbackGet sends GET path to the speed test from inside its container,
-// through the probe, once a second until it answers 200 or serveWithin
-// passes, and returns the body.
+// through the probe, once a second until it answers 200 or
+// harness.ServeWithin passes, and returns the body.
 func loopbackGet(ctx context.Context, p *harness.Probe, path string) (string, error) {
 	target := fmt.Sprintf("http://127.0.0.1:%d%s", appPort, path)
-	deadline := time.Now().Add(serveWithin)
+	deadline := time.Now().Add(harness.ServeWithin)
 	for {
 		resp, err := p.HTTP(ctx, http.MethodGet, target, nil, "")
 		if err == nil && resp.Status == http.StatusOK {
@@ -445,20 +306,20 @@ func stateIs(t *testing.T, c *harness.Container, what, want string) {
 }
 
 // settingsOf returns settings.json, as the UI reads it.
-func settingsOf(ctx context.Context, s *served) (map[string]any, error) {
-	resp, err := s.get(ctx, "/settings.json", nil)
+func settingsOf(ctx context.Context, s *harness.Serving) (map[string]any, error) {
+	resp, err := s.Get(ctx, "/settings.json", nil)
 	if err != nil {
 		return nil, err
 	}
 	var settings map[string]any
-	if err := json.Unmarshal(resp.body, &settings); err != nil {
-		return nil, fmt.Errorf("GET /settings.json answered %d with what is not a JSON object: %w: %s", resp.status, err, harness.Clip(string(resp.body)))
+	if err := json.Unmarshal(resp.Body, &settings); err != nil {
+		return nil, fmt.Errorf("GET /settings.json answered %d with what is not a JSON object: %w: %s", resp.Status, err, harness.Clip(string(resp.Body)))
 	}
 	return settings, nil
 }
 
 // levelIs checks settings.json's telemetry_level is want.
-func levelIs(t *testing.T, s *served, what, want string) {
+func levelIs(t *testing.T, s *harness.Serving, what, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	settings, err := settingsOf(t.Context(), s)

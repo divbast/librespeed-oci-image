@@ -23,25 +23,25 @@ const garbageBytes = 4 * 1048576
 func TestSpeedTestEndpoints(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portEndpoints})
+	s := serve(t, e, image, spec{})
 
 	t.Run("download", func(t *testing.T) {
 		t.Parallel()
 		checks := harness.NewChecks(t)
 		const what = "GET /backend/garbage.php?ckSize=4: status, bytes"
-		resp, err := s.get(t.Context(), "/backend/garbage.php?ckSize=4", nil)
+		resp, err := s.Get(t.Context(), "/backend/garbage.php?ckSize=4", nil)
 		if err != nil {
 			checks.True(what, false, err.Error())
 			return
 		}
-		harness.Equal(checks, what, fmt.Sprintf("%d %d", http.StatusOK, garbageBytes), fmt.Sprintf("%d %d", resp.status, len(resp.body)))
+		harness.Equal(checks, what, fmt.Sprintf("%d %d", http.StatusOK, garbageBytes), fmt.Sprintf("%d %d", resp.Status, len(resp.Body)))
 	})
 
 	t.Run("getIP", func(t *testing.T) {
 		t.Parallel()
 		checks := harness.NewChecks(t)
 		const loopback = "GET /backend/getIP.php over loopback"
-		if body, err := loopbackGet(t.Context(), s.probe, "/backend/getIP.php"); err != nil {
+		if body, err := loopbackGet(t.Context(), s.Probe, "/backend/getIP.php"); err != nil {
 			checks.True(loopback, false, err.Error())
 		} else {
 			harness.Equal(checks, loopback, getIPLoopback, body)
@@ -50,20 +50,20 @@ func TestSpeedTestEndpoints(t *testing.T) {
 		// Answered from the bundled mmdb through the phar: there is no
 		// egress
 		const isp, resolves = "GET /backend/getIP.php?isp for X-Forwarded-For 1.1.1.1", "1.1.1.1 resolves to Cloudflare"
-		resp, err := s.get(t.Context(), "/backend/getIP.php?isp", http.Header{"X-Forwarded-For": {"1.1.1.1"}})
+		resp, err := s.Get(t.Context(), "/backend/getIP.php?isp", http.Header{"X-Forwarded-For": {"1.1.1.1"}})
 		if err != nil {
 			checks.True(isp, false, err.Error())
 			checks.True(resolves, false, err.Error())
 			return
 		}
-		harness.Equal(checks, isp, http.StatusOK, resp.status)
+		harness.Equal(checks, isp, http.StatusOK, resp.Status)
 		var answer struct {
 			ProcessedString string `json:"processedString"`
 		}
-		err = json.Unmarshal(resp.body, &answer)
+		err = json.Unmarshal(resp.Body, &answer)
 		processed := answer.ProcessedString
 		checks.True(resolves, err == nil && (strings.Contains(processed, "Cloudflare") || strings.Contains(processed, "AS13335")),
-			fmt.Sprintf("%q, from %s", processed, harness.Clip(string(resp.body))))
+			fmt.Sprintf("%q, from %s", processed, harness.Clip(string(resp.Body))))
 	})
 
 	checks := harness.NewChecks(t)
@@ -85,11 +85,11 @@ func TestSpeedTestEndpoints(t *testing.T) {
 
 // fetch returns the body of GET path, from the host, whatever its status.
 // A request that gets no answer fails t, and its body is empty.
-func fetch(t *testing.T, s *served, path string) []byte {
+func fetch(t *testing.T, s *harness.Serving, path string) []byte {
 	t.Helper()
-	resp, err := s.get(t.Context(), path, nil)
+	resp, err := s.Get(t.Context(), path, nil)
 	if err != nil {
 		t.Errorf("GET %s: %v", path, err)
 	}
-	return resp.body
+	return resp.Body
 }

@@ -29,7 +29,7 @@ const dbHoldSeconds = "15"
 func TestLockReleasedAfterException(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	s := serve(t, e, image, spec{port: portLockRelease, volume: newVolume(t, e), env: statsOn()})
+	s := serve(t, e, image, spec{volume: newVolume(t, e), env: statsOn()})
 	checks := harness.NewChecks(t)
 	ctx := t.Context()
 	b := newBrowser(t, s)
@@ -44,27 +44,27 @@ func TestLockReleasedAfterException(t *testing.T) {
 	}
 	hold := make(chan held, 1)
 	go func() {
-		out, err := output(ctx, s.probe, "hold-db-lock", dbHoldSeconds)
+		out, err := output(ctx, s.Probe, "hold-db-lock", dbHoldSeconds)
 		hold <- held{out: out, err: err}
 	}()
-	locked, err := pollHolders(ctx, s.probe, statsLoginDB, 10*time.Second, func(h holder) bool {
+	locked, err := pollHolders(ctx, s.Probe, statsLoginDB, 10*time.Second, func(h holder) bool {
 		return h.kind == "POSIX" && h.access == "WRITE" && slices.Contains(h.argv, "hold-db-lock")
 	})
 	lockSeen(t, "hold-db-lock holds the database's write lock", locked, err)
 
 	type answered struct {
-		resp response
+		resp harness.Response
 		err  error
 	}
 	login := make(chan answered, 1)
 	go func() {
 		client := harness.HostClient()
 		client.Timeout = time.Minute
-		resp, perr := s.postForm(ctx, client, loginPath, nil, map[string][]string{"password": {statsPasswordValue}})
+		resp, perr := postForm(ctx, s, client, loginPath, nil, map[string][]string{"password": {statsPasswordValue}})
 		login <- answered{resp: resp, err: perr}
 	}()
 	// The login takes its lock, then waits for the database
-	taken, err := pollHolders(ctx, s.probe, statsLoginLock, 10*time.Second, func(h holder) bool {
+	taken, err := pollHolders(ctx, s.Probe, statsLoginLock, 10*time.Second, func(h holder) bool {
 		return h.kind == "FLOCK" && h.access == "WRITE" && slices.Equal(h.argv, serverArgv)
 	})
 	lockSeen(t, "while the database is locked, the right password takes login.php's lock", taken, err)
@@ -74,14 +74,14 @@ func TestLockReleasedAfterException(t *testing.T) {
 	if got.err != nil {
 		checks.True(fails, false, got.err.Error())
 	} else {
-		harness.Equal(checks, fails, http.StatusInternalServerError, got.resp.status)
-		harness.Contains(t, "login.php says the login is not working", loginBroken, string(got.resp.body))
+		harness.Equal(checks, fails, http.StatusInternalServerError, got.resp.Status)
+		harness.Contains(t, "login.php says the login is not working", loginBroken, string(got.resp.Body))
 	}
-	harness.LogContains(t, s.c, "the server log says why: the database is locked", "librespeed login: SQLSTATE[HY000]: General error: 5 database is locked")
+	harness.LogContains(t, s.C, "the server log says why: the database is locked", "librespeed login: SQLSTATE[HY000]: General error: 5 database is locked")
 
 	// PHP closes the lock's file as the request ends, which may be a moment
 	// after the answer is in
-	left, err := untilFree(ctx, s.probe, statsLoginLock, 5*time.Second)
+	left, err := untilFree(ctx, s.Probe, statsLoginLock, 5*time.Second)
 	if err != nil {
 		checks.True("after the exception, login.php's lock is free", false, err.Error())
 	} else {

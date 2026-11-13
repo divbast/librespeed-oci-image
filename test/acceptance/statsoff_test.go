@@ -80,28 +80,28 @@ var recordedID = regexp.MustCompile(`(?m)^id \d*$`)
 // with the password posted when the method is POST, and returns the body,
 // with any id telemetry.php hands out made N, then the status, on a line
 // of its own.
-func exitRequest(t *testing.T, s *served, method, path, password string) (string, error) {
+func exitRequest(t *testing.T, s *harness.Serving, method, path, password string) (string, error) {
 	t.Helper()
 	header := http.Header{"X-Forwarded-For": {dotSegmentClient}}
 	var (
-		resp response
+		resp harness.Response
 		err  error
 	)
 	if method == http.MethodPost {
-		resp, err = s.postForm(t.Context(), harness.HostClient(), path, header, url.Values{"password": {password}})
+		resp, err = postForm(t.Context(), s, harness.HostClient(), path, header, url.Values{"password": {password}})
 	} else {
-		resp, err = s.get(t.Context(), path, header)
+		resp, err = s.Get(t.Context(), path, header)
 	}
 	if err != nil {
 		return "", err
 	}
-	return recordedID.ReplaceAllString(string(resp.body), "id N") + "\n" + strconv.Itoa(resp.status), nil
+	return recordedID.ReplaceAllString(string(resp.Body), "id N") + "\n" + strconv.Itoa(resp.Status), nil
 }
 
 // leavesStats checks a path out of stats.php is answered by the script it
 // resolves to, exactly as that script answers when asked directly, or is
 // refused. Neither stats.php nor its login ever answers it.
-func leavesStats(t *testing.T, s *served, method, path, target, password string) {
+func leavesStats(t *testing.T, s *harness.Serving, method, path, target, password string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	runs := fmt.Sprintf("%s %s runs %s", method, path, strings.SplitN(target, "?", 2)[0])
@@ -137,31 +137,31 @@ func TestStatsWithoutPassword(t *testing.T) {
 
 	t.Run("telemetry-on", func(t *testing.T) {
 		t.Parallel()
-		s := serve(t, e, image, spec{port: portStatsOff, volume: newVolume(t, e), env: telemetryOn()})
+		s := serve(t, e, image, spec{volume: newVolume(t, e), env: telemetryOn()})
 		form := url.Values{"password": {statsPasswordValue}}
 		for _, path := range append(statsPaths[:len(statsPaths):len(statsPaths)], "/results/login.php", "/login.php") {
-			statusIs(t, s, "GET "+path, http.StatusNotFound, path)
-			resp, err := s.postForm(t.Context(), harness.HostClient(), path, nil, form)
-			answers(t, "POST "+path, http.StatusNotFound, resp, err)
+			harness.StatusIs(t, s, "GET "+path, http.StatusNotFound, path)
+			resp, err := postForm(t.Context(), s, harness.HostClient(), path, nil, form)
+			harness.Answers(t, "POST "+path, http.StatusNotFound, resp, err)
 		}
 		for _, exit := range statsExits {
 			for _, method := range []string{http.MethodGet, http.MethodPost} {
 				leavesStats(t, s, method, exit.path, exit.target, statsPasswordValue)
 			}
 		}
-		harness.IsFile(t, s.c, "no /data/stats-password.hash", "absent", statsPasswordHash)
+		harness.IsFile(t, s.C, "no /data/stats-password.hash", "absent", statsPasswordHash)
 	})
 
 	t.Run("telemetry-off", func(t *testing.T) {
 		t.Parallel()
-		s := serve(t, e, image, spec{port: portStatsIgnored, env: map[string]string{"STATS_PASSWORD": statsPasswordValue}})
-		harness.LogContains(t, s.c, "STATS_PASSWORD without TELEMETRY: the log says it is ignored",
+		s := serve(t, e, image, spec{env: map[string]string{"STATS_PASSWORD": statsPasswordValue}})
+		harness.LogContains(t, s.C, "STATS_PASSWORD without TELEMETRY: the log says it is ignored",
 			"TELEMETRY is off, so these are ignored: STATS_PASSWORD")
-		harness.LogLacks(t, s.c, "STATS_PASSWORD without TELEMETRY: the log never shows it", statsPasswordValue)
-		statusIs(t, s, "GET /results/stats.php with only STATS_PASSWORD set", http.StatusNotFound, statsPath)
-		resp, err := s.postForm(t.Context(), harness.HostClient(), statsPath+"?op=login", nil,
+		harness.LogLacks(t, s.C, "STATS_PASSWORD without TELEMETRY: the log never shows it", statsPasswordValue)
+		harness.StatusIs(t, s, "GET /results/stats.php with only STATS_PASSWORD set", http.StatusNotFound, statsPath)
+		resp, err := postForm(t.Context(), s, harness.HostClient(), statsPath+"?op=login", nil,
 			url.Values{"password": {statsPasswordValue}})
-		answers(t, "POST /results/stats.php?op=login with only STATS_PASSWORD set", http.StatusNotFound, resp, err)
+		harness.Answers(t, "POST /results/stats.php?op=login with only STATS_PASSWORD set", http.StatusNotFound, resp, err)
 	})
 
 	t.Run("too-long", func(t *testing.T) {

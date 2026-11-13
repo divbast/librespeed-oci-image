@@ -459,11 +459,14 @@ breaking change.
   check can never pass under looser settings than we ship. What CI proves
   is what ships. `TestContract` runs ci's contract suite against the image;
   the other tests are LibreSpeed's own, one topic per file, and run in
-  parallel, each on fixed host ports of its own (18290 to 18311), apart
-  from the restart tests, whose phases share one volume and so run in turn.
-  What a test runs inside a container is a probe subcommand: ci's
-  `core.php`, or LibreSpeed's own in `test/probe/app.php`, which PHPStan
-  analyses at level max
+  parallel, apart from the restart tests, whose phases share one volume
+  and so run in turn. Each serves through the harness's `Serve`, which
+  publishes on the host's loopback at ports the engine picks, so no two
+  tests, or two suites on one host, ask for the same one; the assertions
+  (`StatusIs`, `Contains`, `Refuses` and the rest) are the harness's too,
+  shared with every divbast image. What a test runs inside a container is a
+  probe subcommand: ci's `core.php`, or LibreSpeed's own in
+  `test/probe/app.php`, which PHPStan analyses at level max
 - **Go is modern and idiomatic, and linted strictly**, under ci's
   `go/golangci.yml`. Bash is for what is short and will stay so: the
   justfile's recipes. A check that runs inside a Containerfile build stage
