@@ -207,7 +207,7 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 			holders, err = lockHolders(ctx, s.probe, statsLoginLock)
 		}
 	}
-	const holds = "login A holds the lock: an flock(2) lock, taken by the server, PID 1"
+	const holds = "login A holds the lock: an flock(2) write lock, held by the process running the server's argv"
 	switch {
 	case err != nil:
 		checks.True(holds, false, err.Error())

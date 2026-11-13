@@ -110,6 +110,16 @@ modern UI, `/index.html` and `/index-modern.html`.
 
 The access log goes to stdout and PHP's errors to stderr, both as JSON.
 
+**Where visitors' addresses are kept.** Outside the telemetry database, a
+visitor's address can be in two places. The access log
+on stdout records the client of every request, and the engine keeps it for
+as long as its log driver does; `REDACT_IP_ADDRESSES` does not touch it. With
+`STATS_PASSWORD` set, each failed login is kept in `/data/stats-login.db`
+under the client's address (an IPv6 one as its /64). A failure is deleted
+only by the next login attempt, from any client, once it is 900 seconds old,
+or by that client's own successful login, so on a quiet server an old
+failure stays on disk until someone tries again.
+
 `:6.3.1` names the LibreSpeed version, and `:latest` the newest image. Each
 new image of a version moves that version's tag.
 

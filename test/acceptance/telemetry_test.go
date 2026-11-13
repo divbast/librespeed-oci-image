@@ -158,8 +158,8 @@ func TestTelemetry(t *testing.T) {
 	})
 
 	t.Run("redacted", func(t *testing.T) {
-		// json.php never shows the address, so only the row can show it is
-		// gone
+		// json.php never shows the address, so only the row, which rowIs
+		// reads, can show it is gone
 		s := serve(t, e, image, spec{port: portTelemetry, volume: volume, env: map[string]string{
 			"TELEMETRY":           "true",
 			"REDACT_IP_ADDRESSES": "true",
@@ -179,8 +179,6 @@ func TestTelemetry(t *testing.T) {
 			}
 		}
 		redacted, _ := recordResult(t, s, "a result with REDACT_IP_ADDRESSES=true")
-		lacks(t, fmt.Sprintf("GET /results/json.php?id=%s does not show the client's address", redacted), resultClient,
-			string(fetch(t, s, "/results/json.php?id="+redacted)))
 		rowIs(t, s, fmt.Sprintf("row %s as stored, redacted", redacted), redacted, []string{"ip"},
 			`{"ip":"0.0.0.0","ip_in_ispinfo":false}`)
 		resultIs(t, s, fmt.Sprintf("GET /results/json.php?id=%s after the restart", first), first)

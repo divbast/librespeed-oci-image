@@ -175,9 +175,10 @@ breaking change.
   urgent fix. Neither ever moves `:latest` backwards
   (`divbast-publish-decision`): an older commit would take back whatever the
   newer image fixed. The daily run also catches upstream breakage early — a
-  LibreSpeed tag that moved, a FrankenPHP binary that changed behaviour —
-  and a new advisory against what is already shipped surfaces there as a
-  code scanning alert, not a red run. `.github/workflows/stall.yml`, through
+  LibreSpeed tag that moved, or the fetch stage's apt packages changing
+  under it. The FrankenPHP binary cannot surprise it: that moves only by a
+  digest pull request. A new advisory against what is already shipped
+  surfaces there as a code scanning alert, not a red run. `.github/workflows/stall.yml`, through
   divbast/ci's `stall.yml`, fails each day that updates have stopped
   flowing: a Renovate PR stuck, Renovate silent, or two slots lost in a row
 - **Every input the Containerfile names is pinned, but for the two apt
@@ -313,12 +314,15 @@ breaking change.
 
 - `just setup` — fetch divbast/ci into `.ci/` at the commit the workflows
   pin, then install the pinned toolchain and PHPStan. One command on a
-  fresh clone, and again whenever the pin moves
+  fresh clone, and again whenever the pin moves; `just lint` fails, naming
+  it, when `.ci` is not at the pinned commit (`ci-fresh`)
 - `just build` — build the image locally. It does not verify the binary's
   attestation; `just ci-tools && .ci/bin/divbast-verify-frankenphp` does,
   with gh 2.102.0 or newer
 - `just acceptance` — `go test ./test/acceptance/...` against the image
   `just build` wrote, under `ENGINE` (docker unless it says podman).
+  `IMAGE=… just acceptance` tests another image; an empty `IMAGE` fails
+  rather than skipping
   `ENGINE=docker IMAGE=localhost/librespeed:dev mise exec -- go test -run
   TestRoutes ./test/acceptance/` runs one test
 - `just test` — build, then the acceptance suite
