@@ -382,6 +382,9 @@ breaking change.
 - **`just lint` needs a running Docker daemon**, for `docker build --check`.
   `--check` is a buildx flag with no podman equivalent, so this one gate does
   not honour `ENGINE` and does not run without dockerd
+- **`just scan` needs `skopeo` on `PATH`.** It reads the published image with
+  [skopeo](https://github.com/containers/skopeo), which no `mise.toml` entry
+  provides, so `just ci` needs it too. CI runners already have it
 - **PHP is a deliberate exception.** `php` and
   `composer` come from the host, not from mise: mise's only PHP backend
   compiles PHP from source, which is minutes added to every CI run in order to
