@@ -17,8 +17,8 @@ import (
 
 // libreSpeed is LibreSpeed's contract, as its Containerfile and README
 // state it, in the configuration a user who sets nothing gets: telemetry
-// off. ready, when set, is the contract's Ready.
-func libreSpeed(image string, ready func(context.Context, *harness.Container) error) *contract.Config {
+// off. ready, when set, is the contract's ReadyProbe.
+func libreSpeed(image string, ready func(context.Context, *harness.Container, *harness.Probe) error) *contract.Config {
 	return &contract.Config{
 		Image:      image,
 		AppPort:    appPort,
@@ -33,7 +33,7 @@ func libreSpeed(image string, ready func(context.Context, *harness.Container) er
 			StartPeriod: 60 * time.Second,
 			Retries:     3,
 		},
-		Ready:         ready,
+		ReadyProbe:    ready,
 		ProbeApp:      probe.App,
 		HealthOnly404: []string{"/", "/backend/getIP.php", "/index.php"},
 		Scenario:      "telemetry off",
@@ -50,15 +50,13 @@ func TestContract(t *testing.T) {
 	t.Parallel()
 	_, image := underTest(t)
 
-	// The contract installs the probe before Ready, and this installs the
-	// same files again, for a handle on it.
+	// The contract installs the probe, with LibreSpeed's subcommands,
+	// before it asks whether the app is ready, and hands it over (LS-5)
 	var getIP string
 	getIPErr := errors.New("the container under the contract never came up, so getIP.php was never asked")
-	contract.Run(t, libreSpeed(image, func(ctx context.Context, c *harness.Container) error {
-		p, err := harness.InstallProbe(ctx, c, probe.App)
-		if err == nil {
-			getIP, err = loopbackGet(ctx, p, "/backend/getIP.php")
-		}
+	contract.Run(t, libreSpeed(image, func(ctx context.Context, _ *harness.Container, p *harness.Probe) error {
+		var err error
+		getIP, err = loopbackGet(ctx, p, "/backend/getIP.php")
 		getIPErr = err
 		return err
 	}))
