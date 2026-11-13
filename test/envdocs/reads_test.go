@@ -138,6 +138,40 @@ getenv($name);`,
 			},
 		},
 		{
+			// $_ENV and $_SERVER read the environment without a function
+			// call; each is a read of the name its index spells out
+			name: "superglobals",
+			src: "$a = $_ENV['A'];\n$b = $_SERVER[\"B\"] ?? null;\n$c = $_ENV[$x];\n$d = $_SERVER['E' . 'F'];\n" +
+				"function f() { return $_ENV [ 'G' ]; }\n$h = $_ENV[];",
+			want: []read{
+				{line: 2, call: "$_ENV['A']", name: "A"},
+				{line: 3, call: `$_SERVER["B"]`, name: "B"},
+				{line: 4, call: "$_ENV[$x]"},
+				{line: 5, call: "$_SERVER['E'.'F']"},
+				{line: 6, function: "f", call: "$_ENV['G']", name: "G"},
+				{line: 7, call: "$_ENV[]"},
+			},
+		},
+		{
+			name: "not-reads-of-the-superglobals",
+			src:  "$a = $env['A']; $b = $o->_ENV['B']; $c = C::$_ENV['C']; $d = $_ENVX['D']; $e = $_env['E']; $f = $_SERVER;\n$g = '$_ENV[\\'H\\']';",
+		},
+		{
+			// An anonymous class is a scope however it is declared, and a
+			// read in it belongs to its method
+			name: "anonymous-classes",
+			src: "$a = new readonly class { function m($n) { return getenv($n); } };\n" +
+				"$b = new readonly class extends B { function m($n) { return getenv($n); } };\n" +
+				"$d = new class(1) extends B { function m($n) { return getenv($n); } };\n" +
+				"getenv($n);",
+			want: []read{
+				{line: 2, function: "class@anonymous::m", call: "getenv($n)"},
+				{line: 3, function: "class@anonymous::m", call: "getenv($n)"},
+				{line: 4, function: "class@anonymous::m", call: "getenv($n)"},
+				{line: 5, call: "getenv($n)"},
+			},
+		},
+		{
 			name: "braces-in-strings-keep-their-scope",
 			src:  "function f() {\n    $a = '}';\n    $b = \"{\";\n    $c = <<<'X'\n}\nX;\n    getenv($name);\n}\ngetenv($name);",
 			want: []read{

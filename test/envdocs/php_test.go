@@ -30,6 +30,11 @@ import (
 // bootstrap's own, and take the name as their first argument.
 var readers = []string{"getenv", "envbool", "envstring"}
 
+// superglobals are the variables that hold the environment, which PHP
+// compares by case: $_ENV, and $_SERVER, which the server fills with it.
+// Reading one is indexing it, and the index is the name read.
+var superglobals = []string{"$_ENV", "$_SERVER"}
+
 // plainName is a variable name the README can name: a literal argument
 // with any other content, an escape among it, hides the name.
 var plainName = regexp.MustCompile(`\A[A-Za-z_][A-Za-z0-9_]*\z`)
@@ -42,7 +47,8 @@ type read struct {
 	// own name for one.
 	function string
 	// call is the call as written, from the reader's name to its closing
-	// parenthesis, without white space.
+	// parenthesis, without white space; for $_ENV or $_SERVER, the
+	// variable to the bracket that closes its index.
 	call string
 	// name is the variable read when the first argument is a literal that
 	// names it, and "" otherwise.
@@ -435,11 +441,20 @@ func reads(src []byte) ([]read, error) {
 			pending = &s
 		case (t.is("class") || t.is("interface") || t.is("trait") || t.is("enum")) && !member:
 			switch {
-			case t.is("class") && prev.is("new"):
+			case t.is("class") && (prev.is("new") || prev.is("readonly") && at(i-2).is("new")):
 				pending = &scope{name: "class@anonymous", class: true}
 			case next.kind == word:
 				pending = &scope{name: next.text, class: true}
 			}
+		case t.kind == variable && slices.Contains(superglobals, t.text) && next.is("[") && !member:
+			r, err := l.call(i)
+			if err != nil {
+				return nil, err
+			}
+			if n := len(open); n > 0 {
+				r.function = open[n-1].name
+			}
+			found = append(found, r)
 		case t.kind == word && slices.Contains(readers, strings.ToLower(strings.TrimPrefix(t.text, `\`))) &&
 			next.is("(") && !member && !prev.is("function") && !prev.is("new") &&
 			(!prev.is("&") || !at(i-2).is("function")):
@@ -457,7 +472,8 @@ func reads(src []byte) ([]read, error) {
 }
 
 // call reads the call whose name is l.tokens[i], and whose opening
-// parenthesis follows it.
+// parenthesis follows it, or the index of the superglobal that is
+// l.tokens[i], whose opening bracket follows it.
 func (l *lexer) call(i int) (read, error) {
 	var first []token // the first argument's tokens
 	inFirst, depth := true, 0
@@ -484,7 +500,7 @@ func (l *lexer) call(i int) (read, error) {
 }
 
 // read is the call from l.tokens[i] to the parenthesis that closes it at
-// l.tokens[closed], whose first argument is first.
+// l.tokens[closed], whose first argument, or index, is first.
 func (l *lexer) read(i, closed int, first []token) read {
 	r := read{
 		line: l.line(l.tokens[i].start),

@@ -23,6 +23,7 @@ const (
 	readmePath    = "README.md"
 	bootstrapPath = "rootfs/usr/local/bin/librespeed-bootstrap"
 	healthPath    = "rootfs/usr/local/bin/librespeed-health"
+	loginPath     = "rootfs/usr/local/share/librespeed-login/login.php"
 )
 
 // sourcePaths is every PHP file the image runs. Only the bootstrap reads
@@ -31,17 +32,21 @@ var sourcePaths = []string{
 	bootstrapPath,
 	healthPath,
 	"rootfs/usr/local/share/librespeed-health/index.php",
-	"rootfs/usr/local/share/librespeed-login/login.php",
+	loginPath,
 }
 
-// exemption is a read whose name is not written where it is read, allowed
-// in one function of one file. function is "" for the file's top level.
+// exemption is a read the README is not held to, allowed in one function of
+// one file: one whose name is not written where it is read, or one of
+// request data rather than a setting. function is "" for the file's top
+// level.
 type exemption struct {
 	path, function, call string
 }
 
 // exemptions are the only reads the README is not held to, each by the
-// scope it is written in, so the same call anywhere else fails.
+// scope it is written in, so the same call anywhere else fails. Reading
+// $_SERVER is reading the environment too, but these two names are not
+// settings: the server fills them in for each request.
 var exemptions = []exemption{
 	// The helpers every setting is read through. Their callers name the
 	// variable, and are held to the README.
@@ -50,6 +55,9 @@ var exemptions = []exemption{
 	// The whole environment, which the server is exec'd with, less
 	// STATS_PASSWORD
 	{bootstrapPath, "", "getenv()"},
+	// The address Caddy resolved for the request, and its method
+	{loginPath, "client", "$_SERVER['LIBRESPEED_CLIENT_IP']"},
+	{loginPath, "login", "$_SERVER['REQUEST_METHOD']"},
 }
 
 func TestEnvDocs(t *testing.T) {
@@ -123,6 +131,8 @@ $serverEnv = getenv();
 		"## Telemetry and stats\n\n" +
 		"| `NOT_A_SETTING` | a table under another heading is not the Env Vars table |\n"
 	okHealth = "#!/usr/bin/env php\n<?php\n\necho 'ok';\n"
+	okLogin  = "<?php\n\nfunction client(): string {\n    return $_SERVER['LIBRESPEED_CLIENT_IP'];\n}\n\n" +
+		"function login(): never {\n    $post = $_SERVER['REQUEST_METHOD'] === 'POST';\n}\n"
 )
 
 func TestAudit(t *testing.T) {
@@ -132,7 +142,7 @@ func TestAudit(t *testing.T) {
 		name string
 		// The fixture's files, changed: each replace edit applies once to
 		// the bootstrap, the README or the health probe.
-		bootstrap, readme, health []replace
+		bootstrap, readme, health, login []replace
 		// want holds one string per problem audit must report, each
 		// contained in it. Empty means it reports none.
 		want []string
@@ -142,6 +152,33 @@ func TestAudit(t *testing.T) {
 			name:      "undocumented",
 			bootstrap: []replace{{"$serverEnv", "$tagline = envString('TAGLINE');\n$serverEnv"}},
 			want:      []string{"the image reads TAGLINE (" + bootstrapPath + ":21), and README.md's Env Vars table does not name it"},
+		},
+		{
+			name:      "undocumented-from-env",
+			bootstrap: []replace{{"$serverEnv", "$tagline = $_ENV['TAGLINE'];\n$serverEnv"}},
+			want:      []string{"the image reads TAGLINE (" + bootstrapPath + ":21), and README.md's Env Vars table does not name it"},
+		},
+		{
+			name:   "undocumented-from-server",
+			health: []replace{{"echo 'ok';", "echo $_SERVER[\"HEALTH_TIMEOUT\"];"}},
+			want:   []string{"the image reads HEALTH_TIMEOUT (" + healthPath + ":4), and README.md's Env Vars table does not name it"},
+		},
+		{
+			name:      "hidden-name-in-env",
+			bootstrap: []replace{{"$serverEnv", "$which = 'TITLE';\n$other = $_ENV[$which];\n$serverEnv"}},
+			want:      []string{bootstrapPath + ":22: $_ENV[$which], at the top level, reads a variable whose name is not written there"},
+		},
+		{
+			name:  "request-data-in-another-function",
+			login: []replace{{"function login(): never {", "function other(): never {\n    $m = $_SERVER['REQUEST_METHOD'];\n}\n\nfunction login(): never {"}},
+			want: []string{
+				"the image reads REQUEST_METHOD (" + loginPath + ":8), and README.md's Env Vars table does not name it",
+			},
+		},
+		{
+			name:  "request-data-exemption-unused",
+			login: []replace{{"$_SERVER['REQUEST_METHOD'] === 'POST'", "true"}},
+			want:  []string{"no read matches the exemption for $_SERVER['REQUEST_METHOD'], in login() of " + loginPath},
 		},
 		{
 			name:   "unread",
@@ -235,6 +272,7 @@ func TestAudit(t *testing.T) {
 			sources := []source{
 				{bootstrapPath, apply(t, okBootstrap, tt.bootstrap)},
 				{healthPath, apply(t, okHealth, tt.health)},
+				{loginPath, apply(t, okLogin, tt.login)},
 			}
 			names, problems := audit(apply(t, okReadme, tt.readme), sources, exemptions)
 			if len(tt.want) == 0 && !slices.Equal(names, []string{"TELEMETRY", "TITLE"}) {
@@ -320,17 +358,17 @@ func audit(readme []byte, sources []source, exempt []exemption) (names, problems
 			continue
 		}
 		for _, r := range found {
-			if r.name != "" {
-				if _, ok := where[r.name]; !ok {
-					where[r.name] = fmt.Sprintf("%s:%d", s.path, r.line)
-				}
-				continue
-			}
 			i := slices.IndexFunc(exempt, func(e exemption) bool {
 				return e.path == s.path && strings.EqualFold(e.function, r.function) && e.call == r.call
 			})
-			if i >= 0 {
+			switch {
+			case i >= 0:
 				used[i] = true
+				continue
+			case r.name != "":
+				if _, ok := where[r.name]; !ok {
+					where[r.name] = fmt.Sprintf("%s:%d", s.path, r.line)
+				}
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("%s:%d: %s, %s, reads a variable whose name is not written there,"+
