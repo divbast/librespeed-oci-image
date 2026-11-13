@@ -185,7 +185,15 @@ func TestStatsLogin(t *testing.T) {
 			harness.Equal(checks, environment, `{"read":true,"TELEMETRY":true,"STATS_PASSWORD":false}`, strings.TrimSuffix(environ, "\n"))
 		}
 
+		// Every visit starts a session, in a file in /tmp. One gone 25
+		// minutes unused is collected at the next visit, so visits cannot
+		// pile them up there (LS-13).
+		const stale = "/tmp/sess_ls13stale"
+		if _, err := harness.PHPIn(ctx, s.C, fmt.Sprintf(`if (!touch(%q, time() - 1500)) { exit(1); }`, stale)); err != nil {
+			t.Fatalf("touch %s: %v", stale, err)
+		}
 		harness.StatusIs(t, s, "GET /results/stats.php", http.StatusOK, statsPath)
+		harness.IsFile(t, s.C, "a session file 25 minutes unused, after the next visit", "absent", stale)
 		b := newBrowser(t, s)
 		page, err := b.page(ctx)
 		if err != nil {

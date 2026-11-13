@@ -47,7 +47,8 @@ holds is:
   configuration, which the bootstrap writes on every start, and the lock
   file the stats login takes;
 - `/tmp/caddy`: Caddy's own state, the configuration it autosaves among it;
-- the session files PHP makes for visits to the stats page.
+- the session files PHP makes for visits to the stats page, each removed
+  at the first visit after it has gone 24 minutes unused.
 
 Nothing in the image opens a connection out. PHP's URL streams are off,
 there is no ipinfo.io API key, and ISP names come from the offline database
