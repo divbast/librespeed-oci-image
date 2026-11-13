@@ -330,6 +330,11 @@ logs. The login:
   HTTPS. The server speaks plain HTTP, so behind a proxy that ends TLS it
   knows that only from the `X-Forwarded-Proto: https` of a proxy
   `TRUSTED_PROXIES` names;
+- keeps a login only while it is used. Once it has gone 24 minutes
+  without a visit to the stats page, at most the next visit still shows
+  the page logged in, and then it asks for the password again. PHP
+  collects every session that old whenever a session starts, so that
+  visitors to the stats page cannot pile session files up in `/tmp`;
 - allows a client 5 failures in 15 minutes. After that the client gets a
   429, with `Retry-After`, until the oldest of the five is 15 minutes old,
   even with the right password. IPv4 counts per address, IPv6 per /64,

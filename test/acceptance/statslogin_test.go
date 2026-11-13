@@ -240,6 +240,30 @@ func TestStatsLogin(t *testing.T) {
 				fmt.Sprintf("%q before the login, %q after it", recorded, left))
 		}
 
+		// A login gone 24 minutes without a visit ends. PHP reads the
+		// session before it collects it, so the next visit still shows the
+		// page, and the one after asks for the password again (LS-13).
+		if _, aerr := harness.PHPIn(ctx, s.C, `foreach (glob("/tmp/sess_*") as $f) { if (!touch($f, time() - 1500)) { exit(1); } }`); aerr != nil {
+			t.Fatalf("ageing the session files: %v", aerr)
+		}
+		for _, visit := range []struct {
+			what string
+			in   bool
+		}{
+			{"25 minutes without a visit: the next visit is still logged in", true},
+			{"25 minutes without a visit: the visit after it is logged out", false},
+		} {
+			page, err = b.page(ctx)
+			if err != nil {
+				t.Errorf("GET %s: %v", statsPath, err)
+			}
+			if visit.in {
+				harness.Contains(t, visit.what, loggedIn, page)
+			} else {
+				harness.Lacks(t, visit.what, loggedIn, page)
+			}
+		}
+
 		// A session id an attacker planted before the login is not the one
 		// logged in
 		const fixation = "fixation0123456789abcdefghijklmn"
