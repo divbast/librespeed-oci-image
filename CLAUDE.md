@@ -435,13 +435,18 @@ breaking change.
   against something already shipped any worse, so blocking on one only
   holds back whatever else the release fixes. It is reported instead: on the
   run's summary page and, from main and the daily run, as a code scanning
-  alert. "Nothing published" means the registry answers not-found or denied
-  to an anonymous pull of `:latest`, so a package still private counts as
-  unpublished. Then every finding is reported, on the summary page, as a
-  warning annotation and on stderr, and none blocks, because a first image
-  would otherwise block on whatever the FrankenPHP binary already carries.
-  Once the image is public, only new findings block. A registry that cannot
-  be reached fails the scan rather than waving it through
+  alert. Whether anything is published is the registry's to say, never
+  Trivy's: the scan reads `:latest` as an anonymous client, and when ghcr.io
+  refuses, asks GitHub why, with the check job's token, which is what its
+  `packages: read` is for. Not published yet, or a package still private:
+  every finding is reported, on the summary page, as a warning annotation
+  and on stderr, and none blocks, because a first image would otherwise
+  block on whatever the FrankenPHP binary already carries. Once the image
+  is public, only new findings block. A public image the registry refuses,
+  a registry that cannot be reached, or GitHub not answering fails the scan
+  rather than waving it through. A local `just scan` never asks GitHub, so
+  a refusal there is advisory, with a warning that only CI can tell what
+  it means
 - REUSE-compliant SPDX headers on every file; licence is **BSD-2-Clause**. The
   image's licences label also names what it ships from upstream:
   LGPL-3.0-or-later for LibreSpeed, CC-BY-SA-4.0 for the mmdb, Apache-2.0
