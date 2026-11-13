@@ -32,7 +32,8 @@ var readers = []string{"getenv", "envbool", "envstring"}
 
 // superglobals are the variables that hold the environment, which PHP
 // compares by case: $_ENV, and $_SERVER, which the server fills with it.
-// Reading one is indexing it, and the index is the name read.
+// Indexing one reads the name the index spells; reading one whole, as a
+// loop over it does, reads every variable at once, and names none.
 var superglobals = []string{"$_ENV", "$_SERVER"}
 
 // plainName is a variable name the README can name: a literal argument
@@ -48,7 +49,8 @@ type read struct {
 	function string
 	// call is the call as written, from the reader's name to its closing
 	// parenthesis, without white space; for $_ENV or $_SERVER, the
-	// variable to the bracket that closes its index.
+	// variable to the bracket that closes its index, or the variable
+	// alone when it is read whole.
 	call string
 	// name is the variable read when the first argument is a literal that
 	// names it, and "" otherwise.
@@ -446,10 +448,15 @@ func reads(src []byte) ([]read, error) {
 			case next.kind == word:
 				pending = &scope{name: next.text, class: true}
 			}
-		case t.kind == variable && slices.Contains(superglobals, t.text) && next.is("[") && !member:
-			r, err := l.call(i)
-			if err != nil {
-				return nil, err
+		case t.kind == variable && slices.Contains(superglobals, t.text) && !member:
+			// Read whole, as a loop over it or a copy of it reads it, it
+			// reads every variable at once, and names none
+			r := read{line: l.line(t.start), call: t.text}
+			if next.is("[") {
+				var err error
+				if r, err = l.call(i); err != nil {
+					return nil, err
+				}
 			}
 			if n := len(open); n > 0 {
 				r.function = open[n-1].name

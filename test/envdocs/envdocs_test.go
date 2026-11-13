@@ -176,6 +176,15 @@ func TestAudit(t *testing.T) {
 			},
 		},
 		{
+			// The whole of $_SERVER, as a loop over it reads it, names no
+			// variable, so only an exemption could allow it (LS-3)
+			name:  "whole-superglobal",
+			login: []replace{{"function login(): never {", "function headers(): array {\n    foreach ($_SERVER as $k => $v) {}\n}\n\nfunction login(): never {"}},
+			want: []string{
+				loginPath + ":8: $_SERVER, in headers(), reads a variable whose name is not written there",
+			},
+		},
+		{
 			name:  "request-data-exemption-unused",
 			login: []replace{{"$_SERVER['REQUEST_METHOD'] === 'POST'", "true"}},
 			want:  []string{"no read matches the exemption for $_SERVER['REQUEST_METHOD'], in login() of " + loginPath},

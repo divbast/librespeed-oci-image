@@ -114,9 +114,10 @@ breaking change.
   `just lint` runs through `go-test`, fails on a variable read that the
   table does not name, on a row for a variable nothing reads, and on any
   call of `getenv`, `envBool` or `envString`, or index of `$_ENV` or
-  `$_SERVER`, whose name is not a literal. It scans the image's four PHP
-  files in Go, without PHP, and allows five exemptions, each by file and by
-  the function it is written in: `getenv($name)` in `envBool` and in
+  `$_SERVER`, whose name is not a literal, and on either read whole, as
+  a loop over it reads it. It scans the image's four PHP files in Go,
+  without PHP, and allows five exemptions, each by file and by the
+  function it is written in: `getenv($name)` in `envBool` and in
   `envString`, the bootstrap's top-level `getenv()`, which hands the
   server its environment, and the two `$_SERVER` reads in `login.php`
   (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`), which
