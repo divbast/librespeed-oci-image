@@ -185,7 +185,15 @@ func TestStatsLogin(t *testing.T) {
 			harness.Equal(checks, environment, `{"read":true,"TELEMETRY":true,"STATS_PASSWORD":false}`, strings.TrimSuffix(environ, "\n"))
 		}
 
+		// Every visit starts a session, in a file in /tmp. One gone 25
+		// minutes unused is collected at the next visit, so visits cannot
+		// pile them up there (LS-13).
+		const stale = "/tmp/sess_ls13stale"
+		if _, err := harness.PHPIn(ctx, s.C, fmt.Sprintf(`if (!touch(%q, time() - 1500)) { exit(1); }`, stale)); err != nil {
+			t.Fatalf("touch %s: %v", stale, err)
+		}
 		harness.StatusIs(t, s, "GET /results/stats.php", http.StatusOK, statsPath)
+		harness.IsFile(t, s.C, "a session file 25 minutes unused, after the next visit", "absent", stale)
 		b := newBrowser(t, s)
 		page, err := b.page(ctx)
 		if err != nil {
@@ -230,6 +238,30 @@ func TestStatsLogin(t *testing.T) {
 		} else {
 			checks.True(cleared, oneFailure.MatchString(recorded) && left == "",
 				fmt.Sprintf("%q before the login, %q after it", recorded, left))
+		}
+
+		// A login gone 24 minutes without a visit ends. PHP reads the
+		// session before it collects it, so the next visit still shows the
+		// page, and the one after asks for the password again (LS-13).
+		if _, aerr := harness.PHPIn(ctx, s.C, `foreach (glob("/tmp/sess_*") as $f) { if (!touch($f, time() - 1500)) { exit(1); } }`); aerr != nil {
+			t.Fatalf("ageing the session files: %v", aerr)
+		}
+		for _, visit := range []struct {
+			what string
+			in   bool
+		}{
+			{"25 minutes without a visit: the next visit is still logged in", true},
+			{"25 minutes without a visit: the visit after it is logged out", false},
+		} {
+			page, err = b.page(ctx)
+			if err != nil {
+				t.Errorf("GET %s: %v", statsPath, err)
+			}
+			if visit.in {
+				harness.Contains(t, visit.what, loggedIn, page)
+			} else {
+				harness.Lacks(t, visit.what, loggedIn, page)
+			}
 		}
 
 		// A session id an attacker planted before the login is not the one

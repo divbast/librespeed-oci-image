@@ -101,6 +101,9 @@ final class LibreSpeedProbe
             'post_max_size' => $postMaxSize,
             // In bytes, as PHP reads the K, M and G suffixes
             'post_max_size_bytes' => ini_parse_quantity($postMaxSize),
+            // How often session_start() collects session files
+            'session_gc_probability' => self::iniInt('session.gc_probability'),
+            'session_gc_divisor' => self::iniInt('session.gc_divisor'),
         ], JSON_THROW_ON_ERROR) . "\n");
     }
 
@@ -511,6 +514,17 @@ final class LibreSpeedProbe
         $value = strtolower(trim((string) ini_get($directive)));
 
         return in_array($value, ['on', 'yes', 'true', 'stderr', 'stdout'], true) || (int) $value !== 0;
+    }
+
+    /**
+     * A directive that holds a whole number, as that number, or null if it
+     * holds anything else, or PHP knows no such directive
+     */
+    private static function iniInt(string $directive): ?int
+    {
+        $value = ini_get($directive);
+
+        return is_string($value) && preg_match('/\A-?[0-9]+\z/', $value) === 1 ? (int) $value : null;
     }
 
     /**

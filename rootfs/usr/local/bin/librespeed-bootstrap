@@ -23,6 +23,12 @@ const RESULTS_DIR = '/var/www/librespeed/results';
 const DATA_DIR = '/data';
 const TELEMETRY_DB = DATA_DIR . '/telemetry.db';
 const SALT_FILE = DATA_DIR . '/idObfuscation_salt.php';
+// The salt in either shape upstream writes it: as idObfuscation.php does,
+// and ensureSalt() too, four random bytes in hex after a blank line; and
+// as its image's entrypoint does from OBFUSCATION_SALT, with no blank line
+// and the hex as it was given. Upstream uses 32 bits of it, so 8 hex
+// digits at most, and ; comes last, so a file cut short never matches.
+const SALT_FORMAT = '/\A<\?php\n\n?\$OBFUSCATION_SALT = 0x[0-9a-fA-F]{1,8};\n?\z/';
 // The stats login's: STATS_PASSWORD's hash, and the failures it counts
 const STATS_PASSWORD_HASH = DATA_DIR . '/stats-password.hash';
 const STATS_LOGIN_DB = DATA_DIR . '/stats-login.db';
@@ -181,6 +187,27 @@ function requireUsable(string $path, bool $write): void {
     }
     if (!is_file($path) || !is_readable($path) || ($write && !is_writable($path))) {
         fail("$path is there, but uid " . getmyuid() . ' cannot ' . ($write ? 'read and write' : 'read') . ' it');
+    }
+}
+
+/**
+ * A salt already there, as after a restore, or carried over from
+ * upstream's own image, in a shape upstream writes. Upstream requires the
+ * file: one empty or cut short, as a full disk or a half-restored backup
+ * leaves it, sets no salt, which upstream reads as 0, or does not parse,
+ * and either way every id it hands out changes.
+ */
+function requireSaltFormat(): void {
+    clearstatcache(true, SALT_FILE);
+    if (!file_exists(SALT_FILE)) {
+        return;
+    }
+    $salt = @file_get_contents(SALT_FILE);
+    if ($salt === false || preg_match(SALT_FORMAT, $salt) !== 1) {
+        fail(SALT_FILE . ' is there, but is not a salt of 1 to 8 hex digits as upstream writes one: "<?php",'
+            . ' then "$OBFUSCATION_SALT = 0x", the digits and ";". Left empty or cut short, it would change every id'
+            . ' upstream hands out: restore it with the telemetry.db it belongs to. Of a longer salt upstream uses'
+            . ' the last 8 digits alone: write those');
     }
 }
 
@@ -358,9 +385,19 @@ function writeSiteSnippet(bool $telemetry, bool $stats): void {
 
     $snippet = <<<'CADDY'
         # librespeed-bootstrap: telemetry is on
-        # Records a result, and shows one as JSON and as the share image
-        @telemetry path /results/telemetry.php /results/json.php /results/index.php
+        # Records a result. The page only ever posts one, and upstream
+        # records a row of nulls for a request of any other method, so a
+        # crawler's GET is a 404 instead.
+        @telemetry {
+        	path /results/telemetry.php
+        	method POST
+        }
         handle @telemetry {
+        	php
+        }
+        # Shows a result as JSON and as the share image
+        @results path /results/json.php /results/index.php
+        handle @results {
         	php
         }
         # The share image as the modern UI links it, /results/?id=…
@@ -377,13 +414,21 @@ function writeSiteSnippet(bool $telemetry, bool $stats): void {
     }
 
     // Both ways into the login: login.php, from its own root outside the
-    // served tree, told the address its limit counts failures against
+    // served tree, told the address its limit counts failures against, and
+    // the scheme the client used, for its cookie: the connection's own, or
+    // from a proxy TRUSTED_PROXIES names, the X-Forwarded-Proto it sent.
+    // Caddy's {scheme} is the connection's alone, plain HTTP here.
     $login = <<<'CADDY'
         {
         	root * /usr/local/share/librespeed-login
         	rewrite * /login.php
+        	map {http.vars.trusted_proxy} {librespeed_scheme} {
+        		true {header.X-Forwarded-Proto}
+        		default {scheme}
+        	}
         	php {
         		env LIBRESPEED_CLIENT_IP {client_ip}
+        		env LIBRESPEED_SCHEME {librespeed_scheme}
         	}
         }
         CADDY;
@@ -452,6 +497,7 @@ if ($telemetry) {
     requireUsable(TELEMETRY_DB, true);
     if ($obfuscateIds) {
         requireUsable(SALT_FILE, false);
+        requireSaltFormat();
     }
     if ($stats) {
         requireUsable(STATS_LOGIN_DB, true);

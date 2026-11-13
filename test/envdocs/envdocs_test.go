@@ -45,8 +45,8 @@ type exemption struct {
 
 // exemptions are the only reads the README is not held to, each by the
 // scope it is written in, so the same call anywhere else fails. Reading
-// $_SERVER is reading the environment too, but these two names are not
-// settings: the server fills them in for each request.
+// $_SERVER is reading the environment too, but the names login.php reads
+// are not settings: the server fills them in for each request.
 var exemptions = []exemption{
 	// The helpers every setting is read through. Their callers name the
 	// variable, and are held to the README.
@@ -55,9 +55,16 @@ var exemptions = []exemption{
 	// The whole environment, which the server is exec'd with, less
 	// STATS_PASSWORD
 	{bootstrapPath, "", "getenv()"},
-	// The address Caddy resolved for the request, and its method
+	// The address and the scheme Caddy resolved for the request, and its
+	// method
 	{loginPath, "client", "$_SERVER['LIBRESPEED_CLIENT_IP']"},
+	{loginPath, "overHttps", "$_SERVER['LIBRESPEED_SCHEME']"},
 	{loginPath, "login", "$_SERVER['REQUEST_METHOD']"},
+	// Where a browser says the request came from, and the host it was
+	// sent to
+	{loginPath, "fromAnotherOrigin", "$_SERVER['HTTP_SEC_FETCH_SITE']"},
+	{loginPath, "fromAnotherOrigin", "$_SERVER['HTTP_ORIGIN']"},
+	{loginPath, "fromAnotherOrigin", "$_SERVER['HTTP_HOST']"},
 }
 
 func TestEnvDocs(t *testing.T) {
@@ -132,7 +139,9 @@ $serverEnv = getenv();
 		"| `NOT_A_SETTING` | a table under another heading is not the Env Vars table |\n"
 	okHealth = "#!/usr/bin/env php\n<?php\n\necho 'ok';\n"
 	okLogin  = "<?php\n\nfunction client(): string {\n    return $_SERVER['LIBRESPEED_CLIENT_IP'];\n}\n\n" +
-		"function login(): never {\n    $post = $_SERVER['REQUEST_METHOD'] === 'POST';\n}\n"
+		"function login(): never {\n    $post = $_SERVER['REQUEST_METHOD'] === 'POST';\n}\n\n" +
+		"function overHttps(): bool {\n    return $_SERVER['LIBRESPEED_SCHEME'] === 'https';\n}\n\n" +
+		"function fromAnotherOrigin(): bool {\n    return [$_SERVER['HTTP_SEC_FETCH_SITE'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_HOST']] !== [];\n}\n"
 )
 
 func TestAudit(t *testing.T) {
@@ -173,6 +182,15 @@ func TestAudit(t *testing.T) {
 			login: []replace{{"function login(): never {", "function other(): never {\n    $m = $_SERVER['REQUEST_METHOD'];\n}\n\nfunction login(): never {"}},
 			want: []string{
 				"the image reads REQUEST_METHOD (" + loginPath + ":8), and README.md's Env Vars table does not name it",
+			},
+		},
+		{
+			// The whole of $_SERVER, as a loop over it reads it, names no
+			// variable, so only an exemption could allow it (LS-3)
+			name:  "whole-superglobal",
+			login: []replace{{"function login(): never {", "function headers(): array {\n    foreach ($_SERVER as $k => $v) {}\n}\n\nfunction login(): never {"}},
+			want: []string{
+				loginPath + ":8: $_SERVER, in headers(), reads a variable whose name is not written there",
 			},
 		},
 		{

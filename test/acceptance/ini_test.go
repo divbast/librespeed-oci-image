@@ -23,6 +23,8 @@ type phpINI struct {
 	ErrorLog         *string  `json:"error_log"`
 	ErrorReporting   []string `json:"error_reporting"`
 	PostMaxSizeBytes *int64   `json:"post_max_size_bytes"`
+	SessionGCProb    *int64   `json:"session_gc_probability"`
+	SessionGCDivisor *int64   `json:"session_gc_divisor"`
 }
 
 // phpInMemory is how much of a body PHP keeps in memory. It writes the
@@ -37,6 +39,7 @@ const (
 	checkErrorLog       = "error_log is unset"
 	checkErrorReporting = "error_reporting"
 	checkPostMaxSize    = "post_max_size is under PHP's 16 KiB in-memory buffer"
+	checkSessionGC      = "session files are collected at every session start, as session.gc_probability/gc_divisor"
 )
 
 // value formats a field php-ini printed, or says it printed none.
@@ -59,6 +62,7 @@ func TestPHPSettings(t *testing.T) {
 	if ini, err := readINI(t, s); err != nil {
 		for _, what := range []string{
 			checkAllowURLFopen, checkDisplayErrors, checkLogErrors, checkErrorLog, checkErrorReporting, checkPostMaxSize,
+			checkSessionGC,
 		} {
 			checks.True(what, false, err.Error())
 		}
@@ -80,6 +84,10 @@ func TestPHPSettings(t *testing.T) {
 		size := ini.PostMaxSizeBytes
 		checks.True(checkPostMaxSize, size != nil && *size > 0 && *size < phpInMemory,
 			fmt.Sprintf("%s bytes, where 1 to %d would do", value(size), phpInMemory-1))
+		// Each visit to the stats page starts a session, and leaves a file
+		// in /tmp. Collected at every start, none outlives
+		// session.gc_maxlifetime by more than the next visit (LS-13).
+		harness.Equal(checks, checkSessionGC, "1/1", value(ini.SessionGCProb)+"/"+value(ini.SessionGCDivisor))
 	}
 
 	// FrankenPHP logs PHP's errors as the php handler. The server's own

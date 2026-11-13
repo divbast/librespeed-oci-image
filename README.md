@@ -47,7 +47,8 @@ holds is:
   configuration, which the bootstrap writes on every start, and the lock
   file the stats login takes;
 - `/tmp/caddy`: Caddy's own state, the configuration it autosaves among it;
-- the session files PHP makes for visits to the stats page.
+- the session files PHP makes for visits to the stats page, each removed
+  at the first visit after it has gone 24 minutes unused.
 
 Nothing in the image opens a connection out. PHP's URL streams are off,
 there is no ipinfo.io API key, and ISP names come from the offline database
@@ -109,6 +110,10 @@ Everything else is a 404: upstream's classic UI, its examples, its
 modern UI, `/index.html` and `/index-modern.html`.
 
 The access log goes to stdout and PHP's errors to stderr, both as JSON.
+The health probe's own request, a `GET /backend/getIP.php` with no query,
+from the container's own `127.0.0.1` every 30 seconds, is left out of the
+access log. A browser's request for it always carries a query, and is
+logged.
 
 **Where visitors' addresses are kept.** Outside the telemetry database, a
 visitor's address can be in two places. The access log
@@ -239,7 +244,7 @@ so.
 | `STATS_PASSWORD` | *none* | With `TELEMETRY=true`, serves `/results/stats.php` behind the image's own login, with this password. At most 72 bytes |
 | `REDACT_IP_ADDRESSES` | `false` | With `TELEMETRY=true`, records `0.0.0.0` in place of the client's address, in the result and in its ISP information |
 | `ENABLE_ID_OBFUSCATION` | `false` | With `TELEMETRY=true`, hands out result ids scrambled with a salt kept in `/data`, so one share link does not give away the next |
-| `TRUSTED_PROXIES` | *none* | Addresses and CIDR ranges, separated by commas or spaces, of the reverse proxies whose `X-Forwarded-For` names the client, for the stats login's limit and the access log alone. See [Reverse proxy notes](#reverse-proxy-notes) |
+| `TRUSTED_PROXIES` | *none* | Addresses and CIDR ranges, separated by commas or spaces, of the reverse proxies whose `X-Forwarded-For` names the client, for the stats login's limit and the access log, and whose `X-Forwarded-Proto` says whether a login came over HTTPS, for its cookie. See [Reverse proxy notes](#reverse-proxy-notes) |
 
 - An empty value counts as unset.
 - The switches take exactly `true` or `false`. Anything else stops the
@@ -270,7 +275,10 @@ of the others: `PASSWORD` (here `STATS_PASSWORD`), `MODE`, `WEBPORT`,
 With `TELEMETRY=true` the page records each finished test through
 `/results/telemetry.php`, at upstream's `basic` level: the results, the ISP
 line `getIP.php` gave, the client's address, user agent and browser
-language, and no test log. `/results/json.php?id=…` shows a result as JSON,
+language, and no test log. The page posts each result, and
+`telemetry.php` takes a POST alone: any other method is a 404. Upstream
+records a row of nulls for a request of any method, a crawler's GET among
+them. `/results/json.php?id=…` shows a result as JSON,
 and `/results/?id=…`, which the page links to, draws it as a PNG to share.
 `/results/stats.php`, which shows the latest results, addresses included,
 and finds one by id, is served only when `STATS_PASSWORD` is set.
@@ -291,8 +299,20 @@ start changes it. Every share link handed out was made with it, and another
 salt would break them all. So it and `telemetry.db` are one restore unit: a
 database restored without its salt gets a new one at the next start, and
 every old link stops working. A salt uid 65532 cannot read stops the start,
-since upstream would read it as 0 and change every id. Turning obfuscation
-off leaves the salt where it is.
+since upstream would read it as 0 and change every id, and so does one that
+is not a salt as upstream writes one, `<?php`, then
+`$OBFUSCATION_SALT = 0x` with 1 to 8 hex digits and `;`, such as one left
+empty or cut short by a full disk or a half-restored backup. Turning
+obfuscation off leaves the salt where it is.
+
+To keep the share links of upstream's own image, carry its salt over with
+its results. Upstream's image keeps the salt in
+`/var/www/html/results/idObfuscation_salt.php`, written from
+`OBFUSCATION_SALT` when that is set. Put that file at
+`/data/idObfuscation_salt.php`, readable by uid 65532, and it is taken as
+it is, in either case and without the blank line this image writes.
+Upstream uses only the last 8 hex digits of a longer value, so write a
+longer one as those 8, and every id stays the same.
 
 **The stats login.** Upstream's `stats.php` checks its password itself, as
 plain text. The image takes that away. Caddy sends upstream's login form,
@@ -306,7 +326,15 @@ logs. The login:
   the start, and a longer password submitted is wrong;
 - on success starts a new session, so a session id someone planted
   beforehand is never the one logged in, with an `HttpOnly`,
-  `SameSite=Lax` cookie;
+  `SameSite=Lax` cookie, and a `Secure` one when the login came over
+  HTTPS. The server speaks plain HTTP, so behind a proxy that ends TLS it
+  knows that only from the `X-Forwarded-Proto: https` of a proxy
+  `TRUSTED_PROXIES` names;
+- keeps a login only while it is used. Once it has gone 24 minutes
+  without a visit to the stats page, at most the next visit still shows
+  the page logged in, and then it asks for the password again. PHP
+  collects every session that old whenever a session starts, so that
+  visitors to the stats page cannot pile session files up in `/tmp`;
 - allows a client 5 failures in 15 minutes. After that the client gets a
   429, with `Retry-After`, until the oldest of the five is 15 minutes old,
   even with the right password. IPv4 counts per address, IPv6 per /64,
@@ -317,7 +345,19 @@ logs. The login:
   another is being checked gets an immediate 429, and is not counted;
 - answers a client already at its limit with its 429 before it touches that
   one-at-a-time check, so a client that is locked out cannot keep the check
-  busy for everyone else.
+  busy for everyone else;
+- refuses a login a browser says came from another site, with a 403, before
+  it is counted or its password looked at. Any page could otherwise have
+  its visitors' browsers post wrong passwords here, and lock out their own
+  addresses, the admin's among them. A browser's `Sec-Fetch-Site` decides
+  when it sends one: only `same-origin`, and `none`, for an address the
+  visitor typed in, go on. Browsers send it only to HTTPS and `localhost`
+  addresses, so over plain HTTP, as with a browser that predates it, the
+  login's `Origin` must name the host the login was sent to. **Over plain
+  HTTP behind a proxy that rewrites `Host`, as nginx does by default, every
+  browser's login is refused**: see
+  [Reverse proxy notes](#reverse-proxy-notes). A client that sends neither
+  header, such as curl, is not a browser, and goes on.
 
 The client is the address the connection comes from, or, from a proxy
 `TRUSTED_PROXIES` names, the address its `X-Forwarded-For` gives.
@@ -335,6 +375,21 @@ header unchanged lets the client write the right-most address, and so pick
 its own bucket. The layout the acceptance suite tests is the proxy and the
 container on one network, 8080 unpublished, and `TRUSTED_PROXIES` naming
 the proxy's address, or a subnet that holds nothing but proxies.
+
+Have the proxy send `X-Forwarded-Proto` too, as Caddy and Traefik do on
+their own, and nginx with `proxy_set_header X-Forwarded-Proto $scheme`.
+The stats login's session cookie is then `Secure` for a login that came
+over HTTPS, so a browser never sends it over plain HTTP. The header counts
+only from a proxy `TRUSTED_PROXIES` names, since any client can send it.
+
+**Serve the stats page over HTTPS, or keep `Host`.** Browsers send
+`Sec-Fetch-Site` only to HTTPS and `localhost` addresses. Without it, the
+stats login takes a login's `Origin` for where it came from, and refuses
+one that does not name the host the request reached. So over plain HTTP,
+a proxy that rewrites `Host` makes every browser's login a 403. nginx
+rewrites it unless told `proxy_set_header Host $host;`, and Apache unless
+`ProxyPreserveHost On` is set; Caddy and Traefik keep it. Over HTTPS
+`Sec-Fetch-Site` decides, and `Host` does not matter.
 
 **Engines that rewrite client addresses.** From another machine, ask the
 published port directly:

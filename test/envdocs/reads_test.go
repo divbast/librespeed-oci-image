@@ -153,8 +153,21 @@ getenv($name);`,
 			},
 		},
 		{
+			// A superglobal read whole, not indexed, reads every variable
+			// at once, and so none the README could name (LS-3)
+			name: "whole-superglobals",
+			src: "foreach ($_SERVER as $k => $v) {}\n$e = $_ENV;\nfunction f() { return array_keys( $_ENV ); }\n" +
+				"$g = isset($_SERVER) ? 1 : 0;",
+			want: []read{
+				{line: 2, call: "$_SERVER"},
+				{line: 3, call: "$_ENV"},
+				{line: 4, function: "f", call: "$_ENV"},
+				{line: 5, call: "$_SERVER"},
+			},
+		},
+		{
 			name: "not-reads-of-the-superglobals",
-			src:  "$a = $env['A']; $b = $o->_ENV['B']; $c = C::$_ENV['C']; $d = $_ENVX['D']; $e = $_env['E']; $f = $_SERVER;\n$g = '$_ENV[\\'H\\']';",
+			src:  "$a = $env['A']; $b = $o->_ENV['B']; $c = C::$_ENV['C']; $d = $_ENVX['D']; $e = $_env['E']; $f = C::$_SERVER;\n$g = '$_ENV[\\'H\\']';",
 		},
 		{
 			// An anonymous class is a scope however it is declared, and a

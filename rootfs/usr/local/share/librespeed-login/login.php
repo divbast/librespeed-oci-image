@@ -10,9 +10,10 @@
  * never receives a password, and its own check against $stats_password
  * decides nothing.
  *
- * It checks the password against the hash the bootstrap writes from
- * STATS_PASSWORD, limits failures per client, and on success marks the
- * session the way stats.php reads it. It lives outside the served tree, and
+ * It refuses a login a browser says came from another site, checks the
+ * password against the hash the bootstrap writes from STATS_PASSWORD,
+ * limits failures per client, and on success marks the session the way
+ * stats.php reads it. It lives outside the served tree, and
  * Caddy reaches it only through that rewrite.
  */
 
@@ -77,6 +78,55 @@ function client(): string
     }
 
     return $client;
+}
+
+/**
+ * Whether a browser says this login was sent from another origin, as any
+ * page elsewhere can have its visitors' browsers post one: each would be
+ * counted against the visitor's own address, and five lock it out.
+ * Sec-Fetch-Site, which no page can set, decides when a browser sends it:
+ * only same-origin, and none, for a request the visitor made themselves,
+ * go on. Browsers send it only to HTTPS and localhost addresses, so over
+ * plain HTTP, as from a browser that predates it, Origin decides, and
+ * must name the host the login was sent to: behind a proxy that rewrites
+ * Host, every browser's login over plain HTTP is refused. A client that
+ * sends neither is no browser, and no page can make it post. It is Go's
+ * net/http CrossOriginProtection, as Caddy hands over the request, but for
+ * a header sent empty, which Go takes for no header and this refuses. No
+ * browser sends either empty.
+ */
+function fromAnotherOrigin(): bool
+{
+    $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? null;
+    if (is_string($site)) {
+        return $site !== 'same-origin' && $site !== 'none';
+    }
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+    if (!is_string($origin)) {
+        return false;
+    }
+    $host = $_SERVER['HTTP_HOST'] ?? null;
+    $parts = parse_url($origin);
+    if (!is_string($host) || !is_array($parts) || !isset($parts['host'])) {
+        return true;
+    }
+
+    return strcasecmp($parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : ''), $host) !== 0;
+}
+
+/**
+ * Whether the client reached the server over HTTPS, for the session
+ * cookie's Secure flag: the scheme Caddy resolved, which it sets as an
+ * environment variable, as for client(). The server speaks plain HTTP, so
+ * it is https only when a proxy TRUSTED_PROXIES names ended TLS and said
+ * so in X-Forwarded-Proto. From any other client that header counts for
+ * nothing: anyone can send it.
+ */
+function overHttps(): bool
+{
+    $scheme = $_SERVER['LIBRESPEED_SCHEME'] ?? null;
+
+    return is_string($scheme) && strcasecmp($scheme, 'https') === 0;
 }
 
 /**
@@ -227,6 +277,10 @@ function login(): never
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         redirectToStats();
     }
+    // Before anything is counted, or the password is looked at
+    if (fromAnotherOrigin()) {
+        respond(403, 'This login was sent from another site, and is refused.', false);
+    }
 
     $client = bucket(client());
     $hash = passwordHash();
@@ -268,7 +322,7 @@ function login(): never
 
     // A session id the client brought, perhaps planted by someone else, is
     // never the one logged in
-    if (!session_start(['cookie_httponly' => true, 'cookie_samesite' => 'Lax'])
+    if (!session_start(['cookie_httponly' => true, 'cookie_samesite' => 'Lax', 'cookie_secure' => overHttps()])
         || !session_regenerate_id(true)) {
         throw new RuntimeException('cannot start a new session');
     }

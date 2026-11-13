@@ -68,6 +68,17 @@
 		output stdout
 		format json
 	}
+	# Not the health probe's own request, sent every 30 s from this
+	# container's loopback, which would bury the lines worth reading, as
+	# :8081's would. A browser asks getIP.php with a query, always, so its
+	# request is logged from wherever it comes, and so is any other.
+	@probe {
+		remote_ip 127.0.0.1
+		method GET
+		path /backend/getIP.php
+		expression {query} == ""
+	}
+	log_skip @probe
 }
 
 # Internal health listener, meant to stay unpublished: /healthz, and a 404

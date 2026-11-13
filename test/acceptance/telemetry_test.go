@@ -72,6 +72,14 @@ func TestTelemetry(t *testing.T) {
 		// health check needs it, and upstream would make it only with the
 		// first result
 		tableIs(t, s.C, "/data/telemetry.db at start: upstream's table, with no rows", emptyResultsTable)
+		// Upstream records a row of nulls for any request to telemetry.php.
+		// The page only ever posts to it, so nothing else reaches it, and a
+		// crawler's GET records nothing (LS-10).
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut} {
+			resp, err := s.Do(ctx, nil, method, "/results/telemetry.php", nil, nil)
+			harness.Answers(t, method+" /results/telemetry.php", http.StatusNotFound, resp, err)
+		}
+		tableIs(t, s.C, "after a GET, a HEAD and a PUT to /results/telemetry.php: still no rows", emptyResultsTable)
 		harness.LogContains(t, s.C, "the log says the bootstrap created /data/telemetry.db", "created /data/telemetry.db")
 		levelIs(t, s, "settings.json telemetry_level", "basic")
 		// The worker posts telemetry_extra in every record, wrapped with

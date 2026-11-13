@@ -79,9 +79,11 @@ func TestTrustedProxies(t *testing.T) {
 // behindProxy runs the server, and a second container of the same image in
 // front of it as its proxy, so the suite needs no other image, on a
 // network of their own. The engine picks the network's subnet, so the
-// proxy starts first, and the server trusts the address it drew, as the
-// range of that one address. Every login goes from the proxy to the
-// server, with the X-Forwarded-For a proxy would send.
+// proxy starts first, and the server trusts the range around the address
+// it drew, as an operator names the subnet their proxies sit on, so the
+// proxy is matched inside a range and not as an address of its own. Every
+// login goes from the proxy to the server, with the X-Forwarded-For a
+// proxy would send.
 func behindProxy(t *testing.T, e harness.Engine, image string) {
 	t.Helper()
 	ctx := t.Context()
@@ -99,7 +101,13 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	trusted := netip.PrefixFrom(proxyAddr, proxyAddr.BitLen()).String()
+	// A /24, or for IPv6 a /64, which every subnet either engine picks
+	// holds, with the proxy somewhere inside it (LS-S3-1)
+	bits := 24
+	if proxyAddr.Is6() {
+		bits = 64
+	}
+	trusted := netip.PrefixFrom(proxyAddr, bits).Masked().String()
 	env := statsOn()
 	env["TRUSTED_PROXIES"] = trusted
 	server, err := e.Start(ctx, t, &harness.RunSpec{
@@ -121,7 +129,7 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 		t.Fatal(err)
 	}
 
-	const trusts = "global.caddy trusts the proxy's address"
+	const trusts = "global.caddy trusts the range the proxy is in"
 	if global, err := generated(ctx, server, "caddy/global.caddy"); err != nil {
 		checks.True(trusts, false, err.Error())
 	} else {
