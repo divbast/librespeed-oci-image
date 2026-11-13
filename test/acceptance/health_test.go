@@ -161,36 +161,29 @@ func runHealthProbe(ctx context.Context, c *harness.Container) (code int, out st
 	return res.Code, strings.TrimSpace(string(res.Stdout) + string(res.Stderr)), nil
 }
 
-// engineHealthy checks the engine's own verdict, which it reaches by
-// running the health check itself: Docker runs the image's HEALTHCHECK,
-// Podman the --health-cmd it was given. A shell-form command needs
-// /bin/sh, which the image lacks, so only the exec form can pass. Docker
-// must say healthy within the image's start period; Podman runs one check
-// when asked.
+// engineHealthy checks the engine's own verdict, which it reaches on its
+// own schedule, as it would for a user: Docker runs the image's
+// HEALTHCHECK, and Podman the --health-cmd it was given, from the systemd
+// timer it sets up for it. A shell-form command needs /bin/sh, which the
+// image lacks, so only the exec form can pass. The engine must say healthy
+// within the image's start period and three of its intervals, the window
+// the contract's own engine-healthy check gives it, and under that check's
+// name.
 func engineHealthy(t *testing.T, e harness.Engine, image string, c *harness.Container, scenario string) {
 	t.Helper()
 	ctx := t.Context()
-	checks := harness.NewChecks(t)
-	if e.Name() == "podman" {
-		found := "0"
-		if err := c.EngineHealthy(ctx, 0); err != nil {
-			found = err.Error()
-		}
-		harness.Equal(checks, scenario+": podman healthcheck run", "0", found)
-		return
-	}
 	var startPeriod time.Duration
 	if cfg, err := e.ImageConfig(ctx, t, image); err != nil {
 		t.Errorf("reading the image's HEALTHCHECK: %v", err)
 	} else if cfg.Healthcheck != nil {
 		startPeriod = cfg.Healthcheck.StartPeriod
 	}
-	what := fmt.Sprintf("%s: %s reports it healthy within the %d s start period", scenario, e.Name(), int(startPeriod/time.Second))
 	found := "healthy"
 	if err := c.EngineHealthy(ctx, startPeriod); err != nil {
 		found = err.Error()
 	}
-	harness.Equal(checks, what, "healthy", found)
+	harness.Equal(harness.NewChecks(t), scenario+": the engine reports the container healthy within the start period and three intervals",
+		"healthy", found)
 }
 
 // chmodDB sets the mode of the database, as the server's own uid, which
