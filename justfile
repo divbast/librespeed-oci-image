@@ -5,9 +5,11 @@ set shell := ["mise", "exec", "--", "bash", "-euo", "pipefail", "-c"]
 
 # What divbast/ci's app recipes act on: the engine, the image the build
 # writes and the acceptance suite runs, where archive writes it and scan
-# reads it, and the published image scan compares it with
+# reads it, and the published image scan compares it with. IMAGE is a
+# plain value, as ci's README has every app write it, so the environment
+# cannot change it: `just IMAGE=<image> acceptance` tests another image.
 ENGINE := env_var_or_default("ENGINE", "docker")
-IMAGE := env_var_or_default("IMAGE", "localhost/librespeed:dev")
+IMAGE := "localhost/librespeed:dev"
 ARCHIVE := env_var_or_default("ARCHIVE", "/tmp/librespeed-image.tar")
 PUBLISHED := env_var_or_default("PUBLISHED", "ghcr.io/divbast/librespeed:latest")
 

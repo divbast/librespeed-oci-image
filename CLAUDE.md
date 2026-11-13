@@ -328,8 +328,9 @@ breaking change.
   with gh 2.102.0 or newer
 - `just acceptance` — `go test ./test/acceptance/...` against the image
   `just build` wrote, under `ENGINE` (docker unless it says podman).
-  `IMAGE=… just acceptance` tests another image; an empty `IMAGE` fails
-  rather than skipping. One test:
+  `just IMAGE=… acceptance` tests another image. `IMAGE` is a plain value,
+  so `IMAGE=… just acceptance` would quietly test the local one. An empty
+  `IMAGE` fails rather than skipping. One test:
   `ENGINE=docker IMAGE=localhost/librespeed:dev mise exec -- go test -run
   TestRoutes ./test/acceptance/`
 - `just test` — build, then the acceptance suite
