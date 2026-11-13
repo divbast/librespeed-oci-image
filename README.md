@@ -121,7 +121,8 @@ or by that client's own successful login, so on a quiet server an old
 failure stays on disk until someone tries again.
 
 `:6.3.1` names the LibreSpeed version, and `:latest` the newest image. Each
-new image of a version moves that version's tag.
+new image of a version moves that version's tag. The `:<version>-<arch>`
+and `:<version>-staging` tags are the publish's working tags, not for use.
 
 ## Health
 
@@ -384,12 +385,12 @@ archive as it stands on the day of the build. They only fetch LibreSpeed
 and check its tag; the image takes nothing from that stage but LibreSpeed's
 own files.
 
-The binary's own inputs, PHP, Caddy, its plugins and static-php-cli, are
-pinned in divbast/frankenphp, which also fails its build unless the binary
-loads exactly the PHP extensions this image needs. The C libraries
-static-php-cli builds into it are not pinned there: openssl, zlib and
-several others come from their newest release, and libaom from its main
-branch, whenever the binary is built. So a new `:librespeed` digest can
+The binary's own inputs, PHP, Caddy, its plugins, xcaddy, static-php-cli
+and libaom (to an AOM release tag), are pinned in divbast/frankenphp, which
+also fails its build unless the binary loads exactly the PHP extensions
+this image needs. The other C libraries static-php-cli builds into it are
+not pinned there: openssl, zlib and several others come from their newest
+release whenever the binary is built. So a new `:librespeed` digest can
 carry newer C code with no pin moved, and that is how fixes to those
 libraries arrive.
 
@@ -430,6 +431,14 @@ updates land in a day, users see one new image at most. An urgent fix need not
 wait: a manual run of the `build` workflow from `main` (Actions, build, Run
 workflow) publishes at once. Neither ever replaces `:latest` with an image of
 an older commit.
+
+A publish pushes each architecture, merges them into an index under
+`:<version>-staging`, attests it and verifies the attestation, and only then
+moves `:<version>` and `:latest`, before checking both as an anonymous client
+pulls them. If the attestation or its verification fails, `:<version>` and
+`:latest` stay where they were. Re-running the failed job then publishes,
+as long as the image artifacts the check built are kept, which is a day;
+after that the next daily run or a manual run does.
 
 A daily stall check, `.github/workflows/stall.yml`, fails, and GitHub emails
 you, when a Renovate pull request has been open more than 14 days or red or
