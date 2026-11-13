@@ -22,10 +22,10 @@ const crossSite = "This login was sent from another site"
 // origin is refused before it is counted, right password or wrong, so no
 // page elsewhere can have its visitors' browsers post wrong passwords and
 // lock their own addresses out. Sec-Fetch-Site says so when a browser
-// sends it; a browser too old to send it says so by an Origin that names
-// another host. A login from the page's own origin goes on, and so does
-// one that carries neither header, from a client that is no browser
-// (LS-14).
+// sends it, which it does only to HTTPS and localhost addresses; without
+// it, as over plain HTTP, an Origin that names another host says so. A
+// login from the page's own origin goes on, and so does one that carries
+// neither header, from a client that is no browser (LS-14).
 func TestCrossSiteLogin(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)

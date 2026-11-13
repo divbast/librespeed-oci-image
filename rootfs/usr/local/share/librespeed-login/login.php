@@ -86,10 +86,14 @@ function client(): string
  * counted against the visitor's own address, and five lock it out.
  * Sec-Fetch-Site, which no page can set, decides when a browser sends it:
  * only same-origin, and none, for a request the visitor made themselves,
- * go on. A browser too old to send it still sends Origin, which must then
- * name the host the login was sent to. A client that sends neither is no
- * browser, and no page can make it post. It is Go's net/http
- * CrossOriginProtection, as Caddy hands over the request.
+ * go on. Browsers send it only to HTTPS and localhost addresses, so over
+ * plain HTTP, as from a browser that predates it, Origin decides, and
+ * must name the host the login was sent to: behind a proxy that rewrites
+ * Host, every browser's login over plain HTTP is refused. A client that
+ * sends neither is no browser, and no page can make it post. It is Go's
+ * net/http CrossOriginProtection, as Caddy hands over the request, but for
+ * a header sent empty, which Go takes for no header and this refuses. No
+ * browser sends either empty.
  */
 function fromAnotherOrigin(): bool
 {

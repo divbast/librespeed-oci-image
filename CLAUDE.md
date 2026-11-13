@@ -248,7 +248,10 @@ breaking change.
   answered before it can take that lock. A login a browser says came
   from another origin, by `Sec-Fetch-Site`, or by `Origin` when it sends
   no `Sec-Fetch-Site`, is a 403 before anything is counted: any page could
-  otherwise have its visitors' browsers lock their own addresses out
+  otherwise have its visitors' browsers lock their own addresses out.
+  Browsers send `Sec-Fetch-Site` only to HTTPS and localhost addresses, so
+  over plain HTTP `Origin` decides, and must match `Host`: a proxy that
+  rewrites `Host` then refuses every browser's login
 - **The client the limit counts is Caddy's `{client_ip}`**: the connection's
   address, or with `TRUSTED_PROXIES`, `X-Forwarded-For` read right to left
   and strict. A range with a prefix of 0 is refused: every client of its

@@ -335,12 +335,15 @@ logs. The login:
 - refuses a login a browser says came from another site, with a 403, before
   it is counted or its password looked at. Any page could otherwise have
   its visitors' browsers post wrong passwords here, and lock out their own
-  addresses, the admin's among them. A browser's `Sec-Fetch-Site` decides:
-  only `same-origin`, and `none`, for an address the visitor typed in, go
-  on. A browser too old to send it must send an `Origin` naming the host
-  the login was sent to, so behind a proxy that rewrites `Host` such a
-  browser cannot log in. A client that sends neither header, such as curl,
-  is not a browser, and goes on.
+  addresses, the admin's among them. A browser's `Sec-Fetch-Site` decides
+  when it sends one: only `same-origin`, and `none`, for an address the
+  visitor typed in, go on. Browsers send it only to HTTPS and `localhost`
+  addresses, so over plain HTTP, as with a browser that predates it, the
+  login's `Origin` must name the host the login was sent to. **Over plain
+  HTTP behind a proxy that rewrites `Host`, as nginx does by default, every
+  browser's login is refused**: see
+  [Reverse proxy notes](#reverse-proxy-notes). A client that sends neither
+  header, such as curl, is not a browser, and goes on.
 
 The client is the address the connection comes from, or, from a proxy
 `TRUSTED_PROXIES` names, the address its `X-Forwarded-For` gives.
@@ -364,6 +367,15 @@ their own, and nginx with `proxy_set_header X-Forwarded-Proto $scheme`.
 The stats login's session cookie is then `Secure` for a login that came
 over HTTPS, so a browser never sends it over plain HTTP. The header counts
 only from a proxy `TRUSTED_PROXIES` names, since any client can send it.
+
+**Serve the stats page over HTTPS, or keep `Host`.** Browsers send
+`Sec-Fetch-Site` only to HTTPS and `localhost` addresses. Without it, the
+stats login takes a login's `Origin` for where it came from, and refuses
+one that does not name the host the request reached. So over plain HTTP,
+a proxy that rewrites `Host` makes every browser's login a 403. nginx
+rewrites it unless told `proxy_set_header Host $host;`, and Apache unless
+`ProxyPreserveHost On` is set; Caddy and Traefik keep it. Over HTTPS
+`Sec-Fetch-Site` decides, and `Host` does not matter.
 
 **Engines that rewrite client addresses.** From another machine, ask the
 published port directly:
