@@ -115,7 +115,7 @@ func readINI(t *testing.T, s *served) (phpINI, error) {
 	}
 	var ini phpINI
 	if err := json.Unmarshal(res.Stdout, &ini); err != nil {
-		return phpINI{}, fmt.Errorf("php-ini printed no JSON object: %w: %s", err, clip(string(res.Stdout)))
+		return phpINI{}, fmt.Errorf("php-ini printed no JSON object: %w: %s", err, harness.Clip(string(res.Stdout)))
 	}
 	return ini, nil
 }

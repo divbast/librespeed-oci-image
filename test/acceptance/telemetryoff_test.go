@@ -43,7 +43,7 @@ func TestTelemetryOff(t *testing.T) {
 			statusIs(t, s, "GET "+path, http.StatusNotFound, path)
 		}
 		stateIs(t, s.c, "state.json", `{"telemetry":false}`)
-		isFile(t, s.c, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
+		harness.IsFile(t, s.c, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
 	})
 
 	t.Run("switches-ignored", func(t *testing.T) {
@@ -52,7 +52,7 @@ func TestTelemetryOff(t *testing.T) {
 			"REDACT_IP_ADDRESSES":   "true",
 			"ENABLE_ID_OBFUSCATION": "true",
 		}})
-		logContains(t, s.c, "REDACT_IP_ADDRESSES and ENABLE_ID_OBFUSCATION without TELEMETRY: the log says they are ignored",
+		harness.LogContains(t, s.c, "REDACT_IP_ADDRESSES and ENABLE_ID_OBFUSCATION without TELEMETRY: the log says they are ignored",
 			"TELEMETRY is off, so these are ignored: REDACT_IP_ADDRESSES, ENABLE_ID_OBFUSCATION")
 		statusIs(t, s, "GET /results/json.php with only the switches set", http.StatusNotFound, "/results/json.php")
 		levelIs(t, s, "settings.json telemetry_level with only the switches set", "off")
@@ -61,7 +61,7 @@ func TestTelemetryOff(t *testing.T) {
 	t.Run("switch-checked", func(t *testing.T) {
 		t.Parallel()
 		// Ignored is not unchecked
-		refuses(t, e, image, "ENABLE_ID_OBFUSCATION=1 without TELEMETRY", "ENABLE_ID_OBFUSCATION",
-			refusal{env: map[string]string{"ENABLE_ID_OBFUSCATION": "1"}})
+		harness.Refuses(t, e, refusing(image, map[string]string{"ENABLE_ID_OBFUSCATION": "1"}), refusedExit,
+			"ENABLE_ID_OBFUSCATION=1 without TELEMETRY", "ENABLE_ID_OBFUSCATION")
 	})
 }

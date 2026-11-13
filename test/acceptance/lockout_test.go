@@ -82,7 +82,7 @@ func TestLockout(t *testing.T) {
 		if global, err := generated(ctx, s.c, "caddy/global.caddy"); err != nil {
 			checks.True("TRUSTED_PROXIES unset: global.caddy trusts no proxy", false, err.Error())
 		} else {
-			lacks(t, "TRUSTED_PROXIES unset: global.caddy trusts no proxy", "trusted_proxies", global)
+			harness.Lacks(t, "TRUSTED_PROXIES unset: global.caddy trusts no proxy", "trusted_proxies", global)
 		}
 		clientIPOptionsAre(t, s.c, "TRUSTED_PROXIES unset: the server trusts no proxy",
 			`[{"trusted_proxies":null,"trusted_proxies_strict":null,"client_ip_headers":null}]`)
@@ -122,7 +122,7 @@ func TestLockout(t *testing.T) {
 		s := serve(t, e, image, sp)
 		b := newBrowser(t, s)
 		b.loginIs(t, "after a restart: the right password", http.StatusTooManyRequests, statsPasswordValue, nil)
-		records(t, s.probe, "age-failures", "901")
+		harness.RunRecords(t, s.probe, "age-failures", "901")
 		b.loginIs(t, "after age-failures 901: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 
 		// A second client, apart from this host: the server's own loopback
@@ -135,7 +135,7 @@ func TestLockout(t *testing.T) {
 		// once, and nothing is recorded.
 		body := loopbackIs(t, s.probe, "the right password while the probe holds the lock",
 			http.StatusTooManyRequests, "http-request-locked", statsPasswordValue)
-		contains(t, "the 429 says why", busy, body)
+		harness.Contains(t, "the 429 says why", busy, body)
 		bucketsAre(t, s.c, "turned away while busy, nothing is recorded", "127.0.0.1=1")
 
 		betweenThreads(t, s, b)
@@ -149,7 +149,7 @@ func TestLockout(t *testing.T) {
 		bucketsAre(t, s.c, "the loopback is at its limit", "127.0.0.1=5")
 		body = loopbackIs(t, s.probe, "at its limit, while the probe holds the lock: the right password",
 			http.StatusTooManyRequests, "http-request-locked", statsPasswordValue)
-		contains(t, "at its limit, it is told so, not that a check is under way", overLimit, body)
+		harness.Contains(t, "at its limit, it is told so, not that a check is under way", overLimit, body)
 
 		duringFlood(t, s, b)
 	})
@@ -178,7 +178,7 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 	t.Helper()
 	ctx := t.Context()
 	checks := harness.NewChecks(t)
-	records(t, s.probe, "write-stats-hash", statsPasswordValue, "16")
+	harness.RunRecords(t, s.probe, "write-stats-hash", statsPasswordValue, "16")
 
 	type answered struct {
 		status int
@@ -223,7 +223,7 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 
 	body := loopbackIs(t, s.probe, "login B, sent meanwhile to another of the server's threads",
 		http.StatusTooManyRequests, "http-request", "wrong-2")
-	contains(t, "login B: the 429 says why", busy, body)
+	harness.Contains(t, "login B: the 429 says why", busy, body)
 	if a == nil {
 		got := <-loginA
 		a = &got
@@ -232,7 +232,7 @@ func betweenThreads(t *testing.T, s *served, b *browser) {
 	bucketsAre(t, s.c, "login B recorded nothing", "127.0.0.1=1")
 
 	// PHP 8.5's default cost, as the bootstrap writes it
-	records(t, s.probe, "write-stats-hash", statsPasswordValue, "12")
+	harness.RunRecords(t, s.probe, "write-stats-hash", statsPasswordValue, "12")
 	b.loginIs(t, "with the hash back at cost 12, the lock free: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 }
 
@@ -289,7 +289,7 @@ func duringFlood(t *testing.T, s *served, b *browser) {
 		if floodErr[i] == nil && flood[i].Status == http.StatusTooManyRequests && strings.Contains(string(flood[i].Body), overLimit) {
 			refused++
 		} else {
-			t.Logf("flood %d: %d %v: %s", i+1, flood[i].Status, floodErr[i], clip(string(flood[i].Body)))
+			t.Logf("flood %d: %d %v: %s", i+1, flood[i].Status, floodErr[i], harness.Clip(string(flood[i].Body)))
 		}
 	}
 	harness.Equal(checks, "the flood: each told it is over its limit", floodSize, refused)
@@ -358,7 +358,7 @@ func pollHolders(ctx context.Context, p *harness.Probe, path string, within time
 		if !time.Now().Before(deadline) {
 			return nil, nil
 		}
-		if err := pause(ctx, 100*time.Millisecond); err != nil {
+		if err := harness.Pause(ctx, 100*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
@@ -376,7 +376,7 @@ func loopbackRequest(ctx context.Context, p *harness.Probe, sub, password string
 	status, body, _ := strings.Cut(out, "\n")
 	code, err := strconv.Atoi(status)
 	if err != nil || len(status) != 3 {
-		return harness.HTTPResponse{}, fmt.Errorf("%s printed no status line: %s", sub, clip(out))
+		return harness.HTTPResponse{}, fmt.Errorf("%s printed no status line: %s", sub, harness.Clip(out))
 	}
 	return harness.HTTPResponse{Status: code, Body: []byte(body)}, nil
 }

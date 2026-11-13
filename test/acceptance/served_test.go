@@ -126,7 +126,7 @@ func start(t *testing.T, e harness.Engine, image string, sp spec) (*served, erro
 		Publish: []string{fmt.Sprintf("127.0.0.1:%d:%d", sp.port, appPort)},
 	}
 	if sp.volume != "" {
-		run.Mounts = []harness.Mount{{Source: sp.volume, Target: dataDir, Volume: true}}
+		run.Mounts = onData(sp.volume)
 	}
 	s := &served{base: fmt.Sprintf("http://127.0.0.1:%d", sp.port)}
 	if sp.healthPort != 0 {
@@ -175,11 +175,11 @@ func (s *served) wait(ctx context.Context, path string) error {
 		case ierr != nil:
 			return fmt.Errorf("%w; and then: %w", err, ierr)
 		case !ins.State.Running:
-			return withLog(ctx, s.c, fmt.Errorf("container %s stopped, exit status %d, before GET %s answered", s.c, ins.State.ExitCode, path))
+			return harness.WithLog(ctx, s.c, fmt.Errorf("container %s stopped, exit status %d, before GET %s answered", s.c, ins.State.ExitCode, path))
 		case !time.Now().Before(deadline):
-			return withLog(ctx, s.c, fmt.Errorf("GET %s%s got no answer within %s: %w", s.base, path, serveWithin, err))
+			return harness.WithLog(ctx, s.c, fmt.Errorf("GET %s%s got no answer within %s: %w", s.base, path, serveWithin, err))
 		}
-		if err := pause(ctx, time.Second); err != nil {
+		if err := harness.Pause(ctx, time.Second); err != nil {
 			return err
 		}
 	}
@@ -277,45 +277,6 @@ func answers(t *testing.T, what string, want int, resp response, err error) {
 	harness.Equal(checks, what, want, resp.status)
 }
 
-// contains checks text holds needle.
-func contains(t *testing.T, what, needle, text string) {
-	t.Helper()
-	ok := strings.Contains(text, needle)
-	detail := fmt.Sprintf("holds %q", needle)
-	if !ok {
-		detail = fmt.Sprintf("%q is not in %s", needle, clip(text))
-	}
-	harness.NewChecks(t).True(what, ok, detail)
-}
-
-// lacks checks text does not hold needle. Empty text would lack anything,
-// so it fails rather than passes.
-func lacks(t *testing.T, what, needle, text string) {
-	t.Helper()
-	ok := text != "" && !strings.Contains(text, needle)
-	var detail string
-	switch {
-	case text == "":
-		detail = "there is nothing to look through"
-	case ok:
-		detail = fmt.Sprintf("no %q in %d bytes", needle, len(text))
-	default:
-		detail = fmt.Sprintf("%q is in %s", needle, clip(text))
-	}
-	harness.NewChecks(t).True(what, ok, detail)
-}
-
-// clipAt is as much of a text as a failing check quotes.
-const clipAt = 600
-
-// clip quotes text, cut short if it is long.
-func clip(text string) string {
-	if len(text) <= clipAt {
-		return fmt.Sprintf("%q", text)
-	}
-	return fmt.Sprintf("%q... (%d bytes)", text[:clipAt], len(text))
-}
-
 // loopbackGet sends GET path to the speed test from inside its container,
 // through the probe, once a second until it answers 200 or serveWithin
 // passes, and returns the body.
@@ -328,12 +289,12 @@ func loopbackGet(ctx context.Context, p *harness.Probe, path string) (string, er
 			return string(resp.Body), nil
 		}
 		if err == nil {
-			err = fmt.Errorf("GET %s from inside the container answered %d: %s", target, resp.Status, clip(string(resp.Body)))
+			err = fmt.Errorf("GET %s from inside the container answered %d: %s", target, resp.Status, harness.Clip(string(resp.Body)))
 		}
 		if !time.Now().Before(deadline) {
 			return "", err
 		}
-		if err := pause(ctx, time.Second); err != nil {
+		if err := harness.Pause(ctx, time.Second); err != nil {
 			return "", err
 		}
 	}
@@ -366,44 +327,9 @@ func bytesRead(ctx context.Context, c *harness.Container, uri string) (int64, er
 		if !time.Now().Before(deadline) {
 			return 0, fmt.Errorf("no access log line for %s", uri)
 		}
-		if err := pause(ctx, time.Second); err != nil {
+		if err := harness.Pause(ctx, time.Second); err != nil {
 			return 0, err
 		}
-	}
-}
-
-// phpIn runs PHP code in c and returns what it printed, stdout then
-// stderr. A non-zero exit status is an error.
-func phpIn(ctx context.Context, c *harness.Container, code string) (string, error) {
-	res, err := c.Exec(ctx, nil, harness.FrankenPHP, "php-cli", "-r", code)
-	if err != nil {
-		return "", err
-	}
-	out := string(res.Stdout) + string(res.Stderr)
-	if res.Code != 0 {
-		return "", fmt.Errorf("php-cli -r in container %s: exit status %d: %s", c, res.Code, strings.TrimSpace(out))
-	}
-	return out, nil
-}
-
-// withLog adds c's log to err.
-func withLog(ctx context.Context, c *harness.Container, err error) error {
-	logs, lerr := c.Logs(ctx)
-	if lerr != nil {
-		return fmt.Errorf("%w; its log could not be read: %w", err, lerr)
-	}
-	return fmt.Errorf("%w; its log:\n%s", err, logs)
-}
-
-// pause waits for d, or until ctx is done.
-func pause(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
 }
 
@@ -446,7 +372,7 @@ func phpOnVolume(t *testing.T, e harness.Engine, image, volume, code string) {
 		Image:      image,
 		Network:    "none",
 		Confine:    harness.Contract(tmpfsSize),
-		Mounts:     []harness.Mount{{Source: volume, Target: dataDir, Volume: true}},
+		Mounts:     onData(volume),
 		Entrypoint: []string{harness.FrankenPHP},
 		Args:       []string{"php-cli", "-r", code},
 	})
@@ -458,52 +384,24 @@ func phpOnVolume(t *testing.T, e harness.Engine, image, volume, code string) {
 	}
 }
 
-// refusal is how [refuses] runs a container that must not start, beyond
-// the contract.
-type refusal struct {
-	env map[string]string
-	// volume, when set, is mounted at /data.
-	volume string
-	// extra holds raw run flags, for a /data no field of the harness
-	// makes: a tmpfs root owns, as a host directory would be.
-	extra []string
+// onData mounts volume at /data.
+func onData(volume string) []harness.Mount {
+	return []harness.Mount{{Source: volume, Target: dataDir, Volume: true}}
 }
 
-// refuses runs image as r says and checks it refuses to start: the
-// container exits 1, and its log says needle. It runs on no network, since
+// refusedExit is the exit status the bootstrap refuses a start with.
+const refusedExit = 1
+
+// refusing is how [harness.Refuses] runs image with env, as a container
+// that must refuse to start: under the contract, and on no network, since
 // the bootstrap refuses before there is a server to reach.
-func refuses(t *testing.T, e harness.Engine, image, what, needle string, r refusal) {
-	t.Helper()
-	ctx := t.Context()
-	checks := harness.NewChecks(t)
-	exits, says := what+": the container exits", fmt.Sprintf("%s: the log says '%s'", what, needle)
-	run := &harness.RunSpec{
+func refusing(image string, env map[string]string) *harness.RunSpec {
+	return &harness.RunSpec{
 		Image:   image,
 		Network: "none",
 		Confine: harness.Contract(tmpfsSize),
-		Env:     r.env,
-		Extra:   r.extra,
+		Env:     env,
 	}
-	if r.volume != "" {
-		run.Mounts = []harness.Mount{{Source: r.volume, Target: dataDir, Volume: true}}
-	}
-	c, err := e.Start(ctx, t, run)
-	if err != nil {
-		checks.True(exits, false, err.Error())
-		checks.True(says, false, err.Error())
-		return
-	}
-	if code, werr := c.WaitExit(ctx, refuseWithin); werr != nil {
-		checks.True(exits, false, werr.Error())
-	} else {
-		harness.Equal(checks, exits, 1, code)
-	}
-	logs, err := c.Logs(ctx)
-	if err != nil {
-		checks.True(says, false, err.Error())
-		return
-	}
-	contains(t, says, needle, logs)
 }
 
 // output runs the probe subcommand sub in p, one that prints what it
@@ -520,56 +418,6 @@ func output(ctx context.Context, p *harness.Probe, sub string, args ...string) (
 	return string(res.Stdout), nil
 }
 
-// records runs the probe subcommand sub in p and reports its records,
-// each a check of its own.
-func records(t *testing.T, p *harness.Probe, sub string, args ...string) {
-	t.Helper()
-	recs, err := p.Run(t.Context(), sub, args...)
-	if err != nil {
-		t.Errorf("FAIL %v", err)
-		return
-	}
-	harness.NewChecks(t).Records(recs)
-}
-
-// fileState says whether path is in c: present or absent.
-func fileState(ctx context.Context, c *harness.Container, path string) (string, error) {
-	return phpIn(ctx, c, fmt.Sprintf(`echo file_exists(%q) ? "present" : "absent";`, path))
-}
-
-// isFile checks path in c is present or absent, as want says.
-func isFile(t *testing.T, c *harness.Container, what, want, path string) {
-	t.Helper()
-	checks := harness.NewChecks(t)
-	got, err := fileState(t.Context(), c, path)
-	if err != nil {
-		checks.True(what, false, err.Error())
-		return
-	}
-	harness.Equal(checks, what, want, got)
-}
-
-// logContains checks c's log holds needle, and logLacks that it does not.
-func logContains(t *testing.T, c *harness.Container, what, needle string) {
-	t.Helper()
-	logs, err := c.Logs(t.Context())
-	if err != nil {
-		harness.NewChecks(t).True(what, false, err.Error())
-		return
-	}
-	contains(t, what, needle, logs)
-}
-
-func logLacks(t *testing.T, c *harness.Container, what, needle string) {
-	t.Helper()
-	logs, err := c.Logs(t.Context())
-	if err != nil {
-		harness.NewChecks(t).True(what, false, err.Error())
-		return
-	}
-	lacks(t, what, needle, logs)
-}
-
 // generatedDir is where the bootstrap writes, on every start, what the
 // server serves and reads that changes from one start to the next.
 const generatedDir = "/tmp/librespeed"
@@ -577,7 +425,7 @@ const generatedDir = "/tmp/librespeed"
 // generated returns the file the bootstrap generated as name, as the
 // running server reads it.
 func generated(ctx context.Context, c *harness.Container, name string) (string, error) {
-	return phpIn(ctx, c, fmt.Sprintf(`readfile(%q);`, generatedDir+"/"+name))
+	return harness.PHPIn(ctx, c, fmt.Sprintf(`readfile(%q);`, generatedDir+"/"+name))
 }
 
 // stateIs checks state.json, what the bootstrap turned on for the health
@@ -604,7 +452,7 @@ func settingsOf(ctx context.Context, s *served) (map[string]any, error) {
 	}
 	var settings map[string]any
 	if err := json.Unmarshal(resp.body, &settings); err != nil {
-		return nil, fmt.Errorf("GET /settings.json answered %d with what is not a JSON object: %w: %s", resp.status, err, clip(string(resp.body)))
+		return nil, fmt.Errorf("GET /settings.json answered %d with what is not a JSON object: %w: %s", resp.status, err, harness.Clip(string(resp.body)))
 	}
 	return settings, nil
 }

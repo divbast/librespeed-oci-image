@@ -149,15 +149,15 @@ func TestStatsWithoutPassword(t *testing.T) {
 				leavesStats(t, s, method, exit.path, exit.target, statsPasswordValue)
 			}
 		}
-		isFile(t, s.c, "no /data/stats-password.hash", "absent", statsPasswordHash)
+		harness.IsFile(t, s.c, "no /data/stats-password.hash", "absent", statsPasswordHash)
 	})
 
 	t.Run("telemetry-off", func(t *testing.T) {
 		t.Parallel()
 		s := serve(t, e, image, spec{port: portStatsIgnored, env: map[string]string{"STATS_PASSWORD": statsPasswordValue}})
-		logContains(t, s.c, "STATS_PASSWORD without TELEMETRY: the log says it is ignored",
+		harness.LogContains(t, s.c, "STATS_PASSWORD without TELEMETRY: the log says it is ignored",
 			"TELEMETRY is off, so these are ignored: STATS_PASSWORD")
-		logLacks(t, s.c, "STATS_PASSWORD without TELEMETRY: the log never shows it", statsPasswordValue)
+		harness.LogLacks(t, s.c, "STATS_PASSWORD without TELEMETRY: the log never shows it", statsPasswordValue)
 		statusIs(t, s, "GET /results/stats.php with only STATS_PASSWORD set", http.StatusNotFound, statsPath)
 		resp, err := s.postForm(t.Context(), harness.HostClient(), statsPath+"?op=login", nil,
 			url.Values{"password": {statsPasswordValue}})
@@ -167,8 +167,8 @@ func TestStatsWithoutPassword(t *testing.T) {
 	t.Run("too-long", func(t *testing.T) {
 		t.Parallel()
 		// bcrypt reads the first 72 bytes and ignores the rest
-		refuses(t, e, image, "a STATS_PASSWORD of 73 bytes", "STATS_PASSWORD is 73 bytes long",
-			refusal{env: map[string]string{"STATS_PASSWORD": strings.Repeat("0", 73)}})
+		harness.Refuses(t, e, refusing(image, map[string]string{"STATS_PASSWORD": strings.Repeat("0", 73)}), refusedExit,
+			"a STATS_PASSWORD of 73 bytes", "STATS_PASSWORD is 73 bytes long")
 	})
 }
 

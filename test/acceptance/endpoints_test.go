@@ -63,21 +63,21 @@ func TestSpeedTestEndpoints(t *testing.T) {
 		err = json.Unmarshal(resp.body, &answer)
 		processed := answer.ProcessedString
 		checks.True(resolves, err == nil && (strings.Contains(processed, "Cloudflare") || strings.Contains(processed, "AS13335")),
-			fmt.Sprintf("%q, from %s", processed, clip(string(resp.body))))
+			fmt.Sprintf("%q, from %s", processed, harness.Clip(string(resp.body))))
 	})
 
 	checks := harness.NewChecks(t)
 	list := fetch(t, s, "/server-list.json")
 	var servers []json.RawMessage
 	err := json.Unmarshal(list, &servers)
-	checks.True("server-list.json is a one-element array", err == nil && len(servers) == 1, clip(string(list)))
-	lacks(t, "server-list.json holds no absolute URL", "://", string(list))
+	checks.True("server-list.json is a one-element array", err == nil && len(servers) == 1, harness.Clip(string(list)))
+	harness.Lacks(t, "server-list.json holds no absolute URL", "://", string(list))
 	same := fetch(t, s, "/servers.json")
-	checks.True("servers.json is the same list", len(list) > 0 && bytes.Equal(same, list), clip(string(same)))
+	checks.True("servers.json is the same list", len(list) > 0 && bytes.Equal(same, list), harness.Clip(string(same)))
 
 	var settings map[string]any
 	if body := fetch(t, s, "/settings.json"); json.Unmarshal(body, &settings) != nil {
-		t.Errorf("settings.json is not a JSON object: %s", clip(string(body)))
+		t.Errorf("settings.json is not a JSON object: %s", harness.Clip(string(body)))
 	}
 	harness.Equal(checks, "settings.json telemetry_level", "off", fmt.Sprint(settings["telemetry_level"]))
 	harness.Equal(checks, "settings.json keeps upstream's test_order", "ID_U_P", fmt.Sprint(settings["test_order"]))

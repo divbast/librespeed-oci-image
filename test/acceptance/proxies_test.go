@@ -52,7 +52,8 @@ func TestTrustedProxies(t *testing.T) {
 	} {
 		t.Run(tt.what, func(t *testing.T) {
 			t.Parallel()
-			refuses(t, e, image, tt.what, "TRUSTED_PROXIES holds "+tt.holds, refusal{env: map[string]string{"TRUSTED_PROXIES": tt.value}})
+			harness.Refuses(t, e, refusing(image, map[string]string{"TRUSTED_PROXIES": tt.value}), refusedExit,
+				tt.what, "TRUSTED_PROXIES holds "+tt.holds)
 		})
 	}
 
@@ -97,7 +98,7 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 		IP:      proxiedIP,
 		Confine: harness.Contract(tmpfsSize),
 		Env:     env,
-		Mounts:  []harness.Mount{{Source: newVolume(t, e), Target: dataDir, Volume: true}},
+		Mounts:  onData(newVolume(t, e)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +124,7 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 	if global, err := generated(ctx, server, "caddy/global.caddy"); err != nil {
 		checks.True("global.caddy trusts "+proxySubnet, false, err.Error())
 	} else {
-		contains(t, "global.caddy trusts "+proxySubnet, "trusted_proxies static "+proxySubnet, global)
+		harness.Contains(t, "global.caddy trusts "+proxySubnet, "trusted_proxies static "+proxySubnet, global)
 	}
 	clientIPOptionsAre(t, server, "the server trusts X-Forwarded-For from the proxy, read right to left",
 		fmt.Sprintf(`[{"trusted_proxies":{"ranges":[%q],"source":"static"},"trusted_proxies_strict":1,"client_ip_headers":["X-Forwarded-For"]}]`, proxySubnet))
@@ -176,11 +177,11 @@ func servesProxy(t *testing.T, server *harness.Container, p *harness.Probe, base
 		case ierr != nil:
 			return fmt.Errorf("%w; and then: %w", err, ierr)
 		case !ins.State.Running:
-			return withLog(ctx, server, fmt.Errorf("container %s stopped, exit status %d, before it served its proxy", server, ins.State.ExitCode))
+			return harness.WithLog(ctx, server, fmt.Errorf("container %s stopped, exit status %d, before it served its proxy", server, ins.State.ExitCode))
 		case !time.Now().Before(deadline):
-			return withLog(ctx, server, fmt.Errorf("container %s never served its proxy within %s: %w", server, serveWithin, err))
+			return harness.WithLog(ctx, server, fmt.Errorf("container %s never served its proxy within %s: %w", server, serveWithin, err))
 		}
-		if err := pause(ctx, time.Second); err != nil {
+		if err := harness.Pause(ctx, time.Second); err != nil {
 			return err
 		}
 	}

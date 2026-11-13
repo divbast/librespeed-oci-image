@@ -38,7 +38,7 @@ func readSalt(t *testing.T, s *served) (salt, error) {
 	}
 	var got salt
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		return salt{}, fmt.Errorf("read-salt printed no JSON object: %w: %s", err, clip(out))
+		return salt{}, fmt.Errorf("read-salt printed no JSON object: %w: %s", err, harness.Clip(out))
 	}
 	got.raw = out
 	return got, nil
@@ -77,7 +77,7 @@ func TestSaltSurvives(t *testing.T) {
 			checks.True(what, false, err.Error())
 		default:
 			checks.True(what, saltFormat.MatchString(first.Contents) && again.raw == first.raw,
-				fmt.Sprintf("first %s, now %s", clip(first.raw), clip(again.raw)))
+				fmt.Sprintf("first %s, now %s", harness.Clip(first.raw), harness.Clip(again.raw)))
 		}
 	}
 
@@ -89,7 +89,7 @@ func TestSaltSurvives(t *testing.T) {
 			checks.True("the salt is in upstream's format", false, firstErr.Error())
 			checks.True("the salt is private to uid 65532", false, firstErr.Error())
 		} else {
-			checks.True("the salt is in upstream's format", saltFormat.MatchString(first.Contents), clip(first.Contents))
+			checks.True("the salt is in upstream's format", saltFormat.MatchString(first.Contents), harness.Clip(first.Contents))
 			harness.Equal(checks, "the salt is private to uid 65532", "0600", first.Mode)
 		}
 		if generated, err := telemetrySettings(t.Context(), s.c); err == nil {

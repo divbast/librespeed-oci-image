@@ -9,18 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/divbast/ci/harness"
 	"github.com/divbast/librespeed-oci-image/test/probe"
 )
 
-// refuseWithin bounds how long a container that must refuse to start may
-// run before it exits.
-const refuseWithin = 30 * time.Second
-
 // TestBadTelemetryRefused checks a TELEMETRY that is neither true nor
-// false stops the start, and the log names it.
+// false stops the start, and the log names it. It is [harness.Refuses]
+// under names of its own.
 func TestBadTelemetryRefused(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
@@ -28,28 +24,23 @@ func TestBadTelemetryRefused(t *testing.T) {
 	checks := harness.NewChecks(t)
 
 	const exits, names = "TELEMETRY=maybe: the container exits", "TELEMETRY=maybe: the log names TELEMETRY"
-	c, err := e.Start(ctx, t, &harness.RunSpec{
-		Image:   image,
-		Network: "none",
-		Confine: harness.Contract(tmpfsSize),
-		Env:     map[string]string{"TELEMETRY": "maybe"},
-	})
+	c, err := e.Start(ctx, t, refusing(image, map[string]string{"TELEMETRY": "maybe"}))
 	if err != nil {
 		checks.True(exits, false, err.Error())
 		checks.True(names, false, err.Error())
 		return
 	}
-	if code, werr := c.WaitExit(ctx, refuseWithin); werr != nil {
+	if code, werr := c.WaitExit(ctx, harness.ServeWithin); werr != nil {
 		checks.True(exits, false, werr.Error())
 	} else {
-		harness.Equal(checks, exits, 1, code)
+		harness.Equal(checks, exits, refusedExit, code)
 	}
 	logs, err := c.Logs(ctx)
 	if err != nil {
 		checks.True(names, false, err.Error())
 		return
 	}
-	contains(t, names, "TELEMETRY", logs)
+	harness.Contains(t, names, "TELEMETRY", logs)
 }
 
 // bootstrapRun is what the probe's bootstrap-with prints: the bootstrap's
@@ -106,7 +97,7 @@ func TestInvalidUTF8Refused(t *testing.T) {
 			continue
 		}
 		harness.Equal(checks, exits, "1", run.exit())
-		contains(t, says, name+" is not valid UTF-8", run.Stderr)
+		harness.Contains(t, says, name+" is not valid UTF-8", run.Stderr)
 	}
 
 	// The same word in UTF-8 passes, and the start stops at the next
@@ -120,12 +111,12 @@ func TestInvalidUTF8Refused(t *testing.T) {
 		checks.True(goesOn, false, err.Error())
 		checks.True(accepted, false, err.Error())
 	} else {
-		contains(t, goesOn, "TRUSTED_PROXIES holds 'not-a-cidr'", run.Stderr)
-		checks.True(accepted, !strings.Contains(run.Stderr, "UTF-8"), clip(run.Stderr))
+		harness.Contains(t, goesOn, "TRUSTED_PROXIES holds 'not-a-cidr'", run.Stderr)
+		checks.True(accepted, !strings.Contains(run.Stderr, "UTF-8"), harness.Clip(run.Stderr))
 	}
 
 	const nothing = "every refusal came before the bootstrap wrote anything"
-	written, err := phpIn(ctx, c, `echo is_dir("/tmp/librespeed") ? "present" : "absent";`)
+	written, err := harness.PHPIn(ctx, c, `echo is_dir("/tmp/librespeed") ? "present" : "absent";`)
 	if err != nil {
 		checks.True(nothing, false, err.Error())
 		return
@@ -150,7 +141,7 @@ func bootstrapWith(t *testing.T, p *harness.Probe, hexValues map[string]string) 
 	}
 	var run bootstrapRun
 	if err := json.Unmarshal(res.Stdout, &run); err != nil {
-		return bootstrapRun{}, fmt.Errorf("bootstrap-with %s printed no JSON object: %w: %s", assignments, err, clip(string(res.Stdout)))
+		return bootstrapRun{}, fmt.Errorf("bootstrap-with %s printed no JSON object: %w: %s", assignments, err, harness.Clip(string(res.Stdout)))
 	}
 	return run, nil
 }

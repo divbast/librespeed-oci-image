@@ -6,6 +6,8 @@ package acceptance
 import (
 	"net/http"
 	"testing"
+
+	"github.com/divbast/ci/harness"
 )
 
 // TestRoutes checks the image serves only the modern UI, its generated
@@ -66,10 +68,10 @@ func TestRoutes(t *testing.T) {
 			t.Errorf("GET /: %v", err)
 		}
 		page := string(resp.body)
-		contains(t, "GET / is the modern UI", `id="privacy-warning"`, page)
-		lacks(t, "GET / does not lead to the classic UI", "index-classic", page)
+		harness.Contains(t, "GET / is the modern UI", `id="privacy-warning"`, page)
+		harness.Lacks(t, "GET / does not lead to the classic UI", "index-classic", page)
 		// Unset, TITLE, TAGLINE and GDPR_EMAIL leave upstream's own text
-		contains(t, "GET / keeps upstream's heading", "<h1>Free and Open Source Speedtest.</h1>", page)
-		contains(t, "GET / keeps upstream's tagline", `<p class="tagline">No Flash, No Java, No Websockets, No Bullsh*t</p>`, page)
+		harness.Contains(t, "GET / keeps upstream's heading", "<h1>Free and Open Source Speedtest.</h1>", page)
+		harness.Contains(t, "GET / keeps upstream's tagline", `<p class="tagline">No Flash, No Java, No Websockets, No Bullsh*t</p>`, page)
 	})
 }

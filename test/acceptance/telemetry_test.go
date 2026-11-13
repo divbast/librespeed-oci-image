@@ -72,7 +72,7 @@ func TestTelemetry(t *testing.T) {
 		// health check needs it, and upstream would make it only with the
 		// first result
 		tableIs(t, s.c, "/data/telemetry.db at start: upstream's table, with no rows", emptyResultsTable)
-		logContains(t, s.c, "the log says the bootstrap created /data/telemetry.db", "created /data/telemetry.db")
+		harness.LogContains(t, s.c, "the log says the bootstrap created /data/telemetry.db", "created /data/telemetry.db")
 		levelIs(t, s, "settings.json telemetry_level", "basic")
 		// The worker posts telemetry_extra in every record, wrapped with
 		// the server's name, so the image leaves it to the worker
@@ -107,9 +107,9 @@ func TestTelemetry(t *testing.T) {
 		}
 		const unseen = "the log never shows stats_password"
 		if password := statsPassword(generated); password != "" {
-			logLacks(t, s.c, unseen, password)
+			harness.LogLacks(t, s.c, unseen, password)
 		} else {
-			checks.True(unseen, false, "there is no stats_password to look for: "+clip(generated))
+			checks.True(unseen, false, "there is no stats_password to look for: "+harness.Clip(generated))
 		}
 
 		var sent int
@@ -126,7 +126,7 @@ func TestTelemetry(t *testing.T) {
 		pngIs(t, s, "GET /results/index.php?id="+first, "/results/index.php?id="+first)
 		// The modern UI's share link
 		pngIs(t, s, fmt.Sprintf("GET /results/?id=%s&style=modern", first), fmt.Sprintf("/results/?id=%s&style=modern", first))
-		isFile(t, s.c, "/data/telemetry.db", "present", telemetryDB)
+		harness.IsFile(t, s.c, "/data/telemetry.db", "present", telemetryDB)
 		rowIs(t, s, fmt.Sprintf("row %s as stored, unredacted", first), first,
 			[]string{"ip", "dl", "extra", "log"},
 			fmt.Sprintf(`{"ip":%q,"dl":%q,"extra":"{\"server\":\"local\"}","log":"","ip_in_ispinfo":true}`, resultClient, resultDL))
@@ -185,7 +185,7 @@ func TestTelemetry(t *testing.T) {
 
 		// What the health check sees. A damaged database records nothing;
 		// once it is gone, upstream makes a new one with the next result.
-		records(t, s.probe, "damage-db")
+		harness.RunRecords(t, s.probe, "damage-db")
 		got, err := postResult(ctx, s)
 		if err != nil {
 			checks.True("POST /results/telemetry.php to a damaged database: curl exit, status", false, err.Error())
@@ -194,7 +194,7 @@ func TestTelemetry(t *testing.T) {
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database: curl exit, status", http.StatusOK, got.status)
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database records nothing", "", got.body)
 		}
-		records(t, s.probe, "remove-db")
+		harness.RunRecords(t, s.probe, "remove-db")
 		id, _ := recordResult(t, s, "a result after remove-db")
 		harness.Equal(checks, "the first result in a new database", "1", id)
 	})
@@ -229,7 +229,7 @@ func postResult(ctx context.Context, s *served) (posted, error) {
 		RawIspInfo      any    `json:"rawIspInfo"`
 	}
 	if jerr := json.Unmarshal(ip.body, &answer); jerr != nil {
-		return posted{}, fmt.Errorf("getIP.php?isp=true answered %d with what is not its JSON: %w: %s", ip.status, jerr, clip(string(ip.body)))
+		return posted{}, fmt.Errorf("getIP.php?isp=true answered %d with what is not its JSON: %w: %s", ip.status, jerr, harness.Clip(string(ip.body)))
 	}
 	ispinfo, err := encode(answer)
 	if err != nil {
@@ -268,7 +268,7 @@ func recordResult(t *testing.T, s *served, what string) (id string, sent int) {
 	id, ok := strings.CutPrefix(got.body, "id ")
 	if got.status != http.StatusOK || !ok || id == "" {
 		checks.True(what+": POST /results/telemetry.php answers 'id <id>'", false,
-			fmt.Sprintf("got %d, %s", got.status, clip(got.body)))
+			fmt.Sprintf("got %d, %s", got.status, harness.Clip(got.body)))
 		return "", got.sent
 	}
 	checks.True(fmt.Sprintf("%s: POST /results/telemetry.php answers '%s'", what, got.body), true,
@@ -359,7 +359,7 @@ func rowIs(t *testing.T, s *served, what, id string, keys []string, want string)
 // telemetry_settings.php, as upstream's scripts see them once they require
 // it.
 func telemetrySettings(ctx context.Context, c *harness.Container) (string, error) {
-	return phpIn(ctx, c, `require "`+generatedDir+`/telemetry_settings.php";
+	return harness.PHPIn(ctx, c, `require "`+generatedDir+`/telemetry_settings.php";
 		echo json_encode(compact("db_type", "stats_password", "enable_id_obfuscation",
 			"redact_ip_addresses", "Sqlite_db_file")), "\n";`)
 }
@@ -382,7 +382,7 @@ func statsPassword(generated string) string {
 func tableIs(t *testing.T, c *harness.Container, what, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
-	got, err := phpIn(t.Context(), c, `function db(): PDO { return new PDO("sqlite:`+telemetryDB+`", null, null,
+	got, err := harness.PHPIn(t.Context(), c, `function db(): PDO { return new PDO("sqlite:`+telemetryDB+`", null, null,
 			[PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]); }
 		echo json_encode(["columns" => array_column(db()->query("PRAGMA table_info(speedtest_users)")->fetchAll(), "name"),
 			"rows" => (int) db()->query("SELECT COUNT(*) FROM speedtest_users")->fetchColumn()]), "\n";`)
@@ -406,26 +406,26 @@ func jqEdit(raw string, edit func([]field) []field) (string, error) {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return "", fmt.Errorf("not a JSON object: %s", clip(raw))
+		return "", fmt.Errorf("not a JSON object: %s", harness.Clip(raw))
 	}
 	var fs []field
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return "", fmt.Errorf("reading a JSON object: %w: %s", err, clip(raw))
+			return "", fmt.Errorf("reading a JSON object: %w: %s", err, harness.Clip(raw))
 		}
 		key, _ := tok.(string)
 		var v any
 		if err := dec.Decode(&v); err != nil {
-			return "", fmt.Errorf("reading a JSON object: %w: %s", err, clip(raw))
+			return "", fmt.Errorf("reading a JSON object: %w: %s", err, harness.Clip(raw))
 		}
 		fs = append(fs, field{key: key, value: v})
 	}
 	if _, err := dec.Token(); err != nil {
-		return "", fmt.Errorf("reading a JSON object: %w: %s", err, clip(raw))
+		return "", fmt.Errorf("reading a JSON object: %w: %s", err, harness.Clip(raw))
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("more than one JSON value: %s", clip(raw))
+		return "", fmt.Errorf("more than one JSON value: %s", harness.Clip(raw))
 	}
 
 	var b strings.Builder

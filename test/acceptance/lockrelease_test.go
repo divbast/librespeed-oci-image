@@ -75,9 +75,9 @@ func TestLockReleasedAfterException(t *testing.T) {
 		checks.True(fails, false, got.err.Error())
 	} else {
 		harness.Equal(checks, fails, http.StatusInternalServerError, got.resp.status)
-		contains(t, "login.php says the login is not working", loginBroken, string(got.resp.body))
+		harness.Contains(t, "login.php says the login is not working", loginBroken, string(got.resp.body))
 	}
-	logContains(t, s.c, "the server log says why: the database is locked", "librespeed login: SQLSTATE[HY000]: General error: 5 database is locked")
+	harness.LogContains(t, s.c, "the server log says why: the database is locked", "librespeed login: SQLSTATE[HY000]: General error: 5 database is locked")
 
 	// PHP closes the lock's file as the request ends, which may be a moment
 	// after the answer is in
@@ -118,7 +118,7 @@ func untilFree(ctx context.Context, p *harness.Probe, path string, within time.D
 		if err != nil || len(holders) == 0 || !time.Now().Before(deadline) {
 			return holders, err
 		}
-		if err := pause(ctx, 100*time.Millisecond); err != nil {
+		if err := harness.Pause(ctx, 100*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
