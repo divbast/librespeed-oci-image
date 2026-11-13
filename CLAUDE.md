@@ -407,7 +407,8 @@ breaking change.
   `getPdo()`, and back before the exec
 - **`getPdo()` makes the database and its table** with `CREATE TABLE IF NOT
   EXISTS`, on the first result. `telemetry.php` reads its `$_POST` fields
-  unchecked and records a row for any request, a GET included
+  unchecked and records a row for any request, a GET included, so
+  `site.caddy` routes it for POST alone
 - **The modern UI links its share image as `/results/?id=…&style=modern`**,
   which relies on a directory index, so `site.caddy` routes `/results/` to
   `index.php`. Without `style=modern`, `index.php` draws the classic image

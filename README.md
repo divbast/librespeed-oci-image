@@ -271,7 +271,10 @@ of the others: `PASSWORD` (here `STATS_PASSWORD`), `MODE`, `WEBPORT`,
 With `TELEMETRY=true` the page records each finished test through
 `/results/telemetry.php`, at upstream's `basic` level: the results, the ISP
 line `getIP.php` gave, the client's address, user agent and browser
-language, and no test log. `/results/json.php?id=…` shows a result as JSON,
+language, and no test log. The page posts each result, and
+`telemetry.php` takes a POST alone: any other method is a 404. Upstream
+records a row of nulls for a request of any method, a crawler's GET among
+them. `/results/json.php?id=…` shows a result as JSON,
 and `/results/?id=…`, which the page links to, draws it as a PNG to share.
 `/results/stats.php`, which shows the latest results, addresses included,
 and finds one by id, is served only when `STATS_PASSWORD` is set.
