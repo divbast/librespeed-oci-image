@@ -410,13 +410,21 @@ function writeSiteSnippet(bool $telemetry, bool $stats): void {
     }
 
     // Both ways into the login: login.php, from its own root outside the
-    // served tree, told the address its limit counts failures against
+    // served tree, told the address its limit counts failures against, and
+    // the scheme the client used, for its cookie: the connection's own, or
+    // from a proxy TRUSTED_PROXIES names, the X-Forwarded-Proto it sent.
+    // Caddy's {scheme} is the connection's alone, plain HTTP here.
     $login = <<<'CADDY'
         {
         	root * /usr/local/share/librespeed-login
         	rewrite * /login.php
+        	map {http.vars.trusted_proxy} {librespeed_scheme} {
+        		true {header.X-Forwarded-Proto}
+        		default {scheme}
+        	}
         	php {
         		env LIBRESPEED_CLIENT_IP {client_ip}
+        		env LIBRESPEED_SCHEME {librespeed_scheme}
         	}
         }
         CADDY;

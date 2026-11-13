@@ -55,8 +55,10 @@ var exemptions = []exemption{
 	// The whole environment, which the server is exec'd with, less
 	// STATS_PASSWORD
 	{bootstrapPath, "", "getenv()"},
-	// The address Caddy resolved for the request, and its method
+	// The address and the scheme Caddy resolved for the request, and its
+	// method
 	{loginPath, "client", "$_SERVER['LIBRESPEED_CLIENT_IP']"},
+	{loginPath, "overHttps", "$_SERVER['LIBRESPEED_SCHEME']"},
 	{loginPath, "login", "$_SERVER['REQUEST_METHOD']"},
 	// Where a browser says the request came from, and the host it was
 	// sent to
@@ -138,6 +140,7 @@ $serverEnv = getenv();
 	okHealth = "#!/usr/bin/env php\n<?php\n\necho 'ok';\n"
 	okLogin  = "<?php\n\nfunction client(): string {\n    return $_SERVER['LIBRESPEED_CLIENT_IP'];\n}\n\n" +
 		"function login(): never {\n    $post = $_SERVER['REQUEST_METHOD'] === 'POST';\n}\n\n" +
+		"function overHttps(): bool {\n    return $_SERVER['LIBRESPEED_SCHEME'] === 'https';\n}\n\n" +
 		"function fromAnotherOrigin(): bool {\n    return [$_SERVER['HTTP_SEC_FETCH_SITE'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_HOST']] !== [];\n}\n"
 )
 

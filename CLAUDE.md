@@ -116,13 +116,14 @@ breaking change.
   call of `getenv`, `envBool` or `envString`, or index of `$_ENV` or
   `$_SERVER`, whose name is not a literal, and on either read whole, as
   a loop over it reads it. It scans the image's four PHP files in Go,
-  without PHP, and allows eight exemptions, each by file and by the
+  without PHP, and allows nine exemptions, each by file and by the
   function it is written in: `getenv($name)` in `envBool` and in
   `envString`, the bootstrap's top-level `getenv()`, which hands the
-  server its environment, and the five `$_SERVER` reads in `login.php`
-  (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`, and
-  `HTTP_SEC_FETCH_SITE`, `HTTP_ORIGIN` and `HTTP_HOST` in
-  `fromAnotherOrigin`), which are request data, not settings. The same read anywhere else fails, and
+  server its environment, and the six `$_SERVER` reads in `login.php`
+  (`LIBRESPEED_CLIENT_IP` in `client`, `LIBRESPEED_SCHEME` in
+  `overHttps`, `REQUEST_METHOD` in `login`, and `HTTP_SEC_FETCH_SITE`,
+  `HTTP_ORIGIN` and `HTTP_HOST` in `fromAnotherOrigin`), which are
+  request data, not settings. The same read anywhere else fails, and
   so does an exemption nothing matches. The switches take exactly `true`
   or `false`, and every variable is checked before anything is written,
   so a typo stops the start instead of meaning the default
@@ -253,6 +254,10 @@ breaking change.
   and strict. A range with a prefix of 0 is refused: every client of its
   family would be a trusted proxy, free to write an address of the other
   family, which the range does not hold, and be counted as that.
+  The session cookie is `Secure` when the client used HTTPS: the
+  connection's `{scheme}`, or from a trusted proxy its `X-Forwarded-Proto`,
+  which site.caddy maps into `LIBRESPEED_SCHEME`. `{scheme}` alone never
+  reads that header, so behind a TLS proxy it is always http.
   `REMOTE_ADDR` and upstream's own address handling stay as they are:
   `getIP_util.php` trusts `Client-IP`, `X-Real-IP`, `X-Forwarded-For` and
   `CF-Connecting-IPv6` from anyone, and the image leaves that alone.

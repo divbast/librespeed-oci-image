@@ -111,6 +111,21 @@ function fromAnotherOrigin(): bool
 }
 
 /**
+ * Whether the client reached the server over HTTPS, for the session
+ * cookie's Secure flag: the scheme Caddy resolved, which it sets as an
+ * environment variable, as for client(). The server speaks plain HTTP, so
+ * it is https only when a proxy TRUSTED_PROXIES names ended TLS and said
+ * so in X-Forwarded-Proto. From any other client that header counts for
+ * nothing: anyone can send it.
+ */
+function overHttps(): bool
+{
+    $scheme = $_SERVER['LIBRESPEED_SCHEME'] ?? null;
+
+    return is_string($scheme) && strcasecmp($scheme, 'https') === 0;
+}
+
+/**
  * What failures are counted against: an IPv4 address alone, an IPv6 address
  * by its /64, which is what one subscriber is usually given and holds more
  * addresses than any limit could count, and an IPv4-mapped IPv6 address as
@@ -303,7 +318,7 @@ function login(): never
 
     // A session id the client brought, perhaps planted by someone else, is
     // never the one logged in
-    if (!session_start(['cookie_httponly' => true, 'cookie_samesite' => 'Lax'])
+    if (!session_start(['cookie_httponly' => true, 'cookie_samesite' => 'Lax', 'cookie_secure' => overHttps()])
         || !session_regenerate_id(true)) {
         throw new RuntimeException('cannot start a new session');
     }

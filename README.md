@@ -240,7 +240,7 @@ so.
 | `STATS_PASSWORD` | *none* | With `TELEMETRY=true`, serves `/results/stats.php` behind the image's own login, with this password. At most 72 bytes |
 | `REDACT_IP_ADDRESSES` | `false` | With `TELEMETRY=true`, records `0.0.0.0` in place of the client's address, in the result and in its ISP information |
 | `ENABLE_ID_OBFUSCATION` | `false` | With `TELEMETRY=true`, hands out result ids scrambled with a salt kept in `/data`, so one share link does not give away the next |
-| `TRUSTED_PROXIES` | *none* | Addresses and CIDR ranges, separated by commas or spaces, of the reverse proxies whose `X-Forwarded-For` names the client, for the stats login's limit and the access log alone. See [Reverse proxy notes](#reverse-proxy-notes) |
+| `TRUSTED_PROXIES` | *none* | Addresses and CIDR ranges, separated by commas or spaces, of the reverse proxies whose `X-Forwarded-For` names the client, for the stats login's limit and the access log, and whose `X-Forwarded-Proto` says whether a login came over HTTPS, for its cookie. See [Reverse proxy notes](#reverse-proxy-notes) |
 
 - An empty value counts as unset.
 - The switches take exactly `true` or `false`. Anything else stops the
@@ -313,7 +313,10 @@ logs. The login:
   the start, and a longer password submitted is wrong;
 - on success starts a new session, so a session id someone planted
   beforehand is never the one logged in, with an `HttpOnly`,
-  `SameSite=Lax` cookie;
+  `SameSite=Lax` cookie, and a `Secure` one when the login came over
+  HTTPS. The server speaks plain HTTP, so behind a proxy that ends TLS it
+  knows that only from the `X-Forwarded-Proto: https` of a proxy
+  `TRUSTED_PROXIES` names;
 - allows a client 5 failures in 15 minutes. After that the client gets a
   429, with `Retry-After`, until the oldest of the five is 15 minutes old,
   even with the right password. IPv4 counts per address, IPv6 per /64,
@@ -351,6 +354,12 @@ header unchanged lets the client write the right-most address, and so pick
 its own bucket. The layout the acceptance suite tests is the proxy and the
 container on one network, 8080 unpublished, and `TRUSTED_PROXIES` naming
 the proxy's address, or a subnet that holds nothing but proxies.
+
+Have the proxy send `X-Forwarded-Proto` too, as Caddy and Traefik do on
+their own, and nginx with `proxy_set_header X-Forwarded-Proto $scheme`.
+The stats login's session cookie is then `Secure` for a login that came
+over HTTPS, so a browser never sends it over plain HTTP. The header counts
+only from a proxy `TRUSTED_PROXIES` names, since any client can send it.
 
 **Engines that rewrite client addresses.** From another machine, ask the
 published port directly:
