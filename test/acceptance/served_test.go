@@ -208,19 +208,35 @@ func newVolume(t *testing.T, e harness.Engine) string {
 	return v
 }
 
-// newNetwork makes a network for t with the subnet given, removed when t
-// ends, or fails t. A container run again on it at a fixed address is the
-// same client to a server it connects to, or that its published port
-// hands on: rootless Podman hands the server a published port's
-// connections from the server's own address, where Docker uses the
-// gateway's, and a container run again otherwise draws a new one.
-func newNetwork(t *testing.T, e harness.Engine, subnet string) string {
+// newNetwork makes a network for t, on a subnet the engine picks, removed
+// when t ends, or fails t. No subnet is fixed, so none can clash with one
+// another suite, or the host, already has. A container run again on it at
+// the address it had before, which [addressOf] reads, is the same client
+// to a server it connects to, or that its published port hands on:
+// rootless Podman hands the server a published port's connections from
+// the server's own address, where Docker uses the gateway's, and a
+// container run again otherwise draws a new one.
+func newNetwork(t *testing.T, e harness.Engine) string {
 	t.Helper()
-	n, err := e.Network(t.Context(), t, "", subnet, false)
+	n, err := e.Network(t.Context(), t, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// addressOf returns c's address on the network it was started on, as the
+// engine reports it, or fails t.
+func addressOf(t *testing.T, c *harness.Container) string {
+	t.Helper()
+	ins, err := c.Inspect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ins.IP == "" {
+		t.Fatalf("container %s has no address on the network it was started on", c)
+	}
+	return ins.IP
 }
 
 // phpOnVolume runs PHP code in a throwaway container of image, under the

@@ -44,13 +44,6 @@ const (
 // failureLimit is how many failures inside 900 s lock a client out.
 const failureLimit = 5
 
-// The network every container of TestLockout runs on, and its address
-// there, so the server sees one client across a restart.
-const (
-	lockoutSubnet = "10.89.66.0/24"
-	lockoutIP     = "10.89.66.200"
-)
-
 // failureLimits is one client's five failed logins, the limit.
 var failureLimits = regexp.MustCompile(`\A([0-9a-f.:/]+)=5\z`)
 
@@ -72,10 +65,13 @@ func statsOn() map[string]string {
 func TestLockout(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
-	sp := spec{volume: newVolume(t, e), network: newNetwork(t, e, lockoutSubnet), ip: lockoutIP, env: statsOn()}
+	// Every phase runs on one network, and the restart at the address the
+	// first start drew there, so the server sees one client across it
+	sp := spec{volume: newVolume(t, e), network: newNetwork(t, e), env: statsOn()}
 
 	t.Run("five-failures", func(t *testing.T) {
 		s := serve(t, e, image, sp)
+		sp.ip = addressOf(t, s.C)
 		checks := harness.NewChecks(t)
 		ctx := t.Context()
 
@@ -118,6 +114,9 @@ func TestLockout(t *testing.T) {
 	})
 
 	t.Run("restart", func(t *testing.T) {
+		if sp.ip == "" {
+			t.Fatal("the first start's address is unknown, so the server would take a restart for a new client")
+		}
 		// The failures are on /data, so a restart forgives none of them
 		s := serve(t, e, image, sp)
 		b := newBrowser(t, s)
