@@ -494,3 +494,6 @@ breaking change.
   `test/upstreamlayout` does for `upstream-layout.sh`
 - A test suite that has never failed proves nothing. When adding a check, prove
   it can fail before trusting it
+- Run the acceptance suite with Docker 29.1 or newer. Docker 29.0.x refuses
+  `--ip` on a subnet the engine picked (moby#51134, fixed by #51583), so
+  `TestLockout` fails loudly there; the runners and recent releases accept it

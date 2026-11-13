@@ -374,7 +374,9 @@ to the `X-Forwarded-For` they pass on. One that passes on a client's own
 header unchanged lets the client write the right-most address, and so pick
 its own bucket. The layout the acceptance suite tests is the proxy and the
 container on one network, 8080 unpublished, and `TRUSTED_PROXIES` naming
-the proxy's address, or a subnet that holds nothing but proxies.
+the network's whole /24 (a /64 for IPv6), the range the proxy sits in. That
+range holds the server too, so on a network shared with other clients, name
+the proxy's own address or a subnet of proxies alone.
 
 Have the proxy send `X-Forwarded-Proto` too, as Caddy and Traefik do on
 their own, and nginx with `proxy_set_header X-Forwarded-Proto $scheme`.
@@ -387,7 +389,8 @@ only from a proxy `TRUSTED_PROXIES` names, since any client can send it.
 stats login takes a login's `Origin` for where it came from, and refuses
 one that does not name the host the request reached. So over plain HTTP,
 a proxy that rewrites `Host` makes every browser's login a 403. nginx
-rewrites it unless told `proxy_set_header Host $host;`, and Apache unless
+rewrites it unless told `proxy_set_header Host $http_host;` (not `$host`,
+which drops the port the login's `Origin` check compares), and Apache unless
 `ProxyPreserveHost On` is set; Caddy and Traefik keep it. Over HTTPS
 `Sec-Fetch-Site` decides, and `Host` does not matter.
 
