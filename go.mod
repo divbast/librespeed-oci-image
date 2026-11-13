@@ -3,7 +3,7 @@
 
 module github.com/divbast/librespeed-oci-image
 
-go 1.27.0
+go 1.27.4
 
 require github.com/divbast/ci v0.0.0-00010101000000-000000000000
 
