@@ -113,13 +113,15 @@ breaking change.
   through `envBool` or `envString`. `TestEnvDocs` (`test/envdocs`), which
   `just lint` runs through `go-test`, fails on a variable read that the
   table does not name, on a row for a variable nothing reads, and on any
-  call of `getenv`, `envBool` or `envString` whose first argument is not a
-  literal name. It scans the image's four PHP files in Go, without PHP,
-  and allows three exemptions, each by file and by the function it is
-  written in: `getenv($name)` in `envBool` and in `envString`, and the
-  bootstrap's top-level `getenv()`, which hands the server its
-  environment. The same call anywhere else fails, and so does an exemption
-  nothing matches. The switches take exactly `true` or `false`, and every
+  call of `getenv`, `envBool` or `envString`, or index of `$_ENV` or
+  `$_SERVER`, whose name is not a literal. It scans the image's four PHP
+  files in Go, without PHP, and allows five exemptions, each by file and by
+  the function it is written in: `getenv($name)` in `envBool` and in
+  `envString`, the bootstrap's top-level `getenv()`, which hands the
+  server its environment, and the two `$_SERVER` reads in `login.php`
+  (`LIBRESPEED_CLIENT_IP` in `client`, `REQUEST_METHOD` in `login`), which
+  are request data, not settings. The same read anywhere else fails, and
+  so does an exemption nothing matches. The switches take exactly `true` or `false`, and every
   variable is checked before anything is written, so a typo stops the
   start instead of meaning the default
 - **`test/upstream-layout.sh` guards every upstream path and string the
@@ -178,8 +180,8 @@ breaking change.
   LibreSpeed tag that moved, or the fetch stage's apt packages changing
   under it. The FrankenPHP binary cannot surprise it: that moves only by a
   digest pull request. A new advisory against what is already shipped
-  surfaces there as a code scanning alert, not a red run. `.github/workflows/stall.yml`, through
-  divbast/ci's `stall.yml`, fails each day that updates have stopped
+  surfaces there as a code scanning alert, not a red run.
+  `.github/workflows/stall.yml`, through divbast/ci's `stall.yml`, fails each day that updates have stopped
   flowing: a Renovate PR stuck, Renovate silent, or two slots lost in a row
 - **Every input the Containerfile names is pinned, but for the two apt
   packages the fetch stage installs.** LibreSpeed releases carry no assets,
@@ -202,13 +204,14 @@ breaking change.
   `RUN`. A local `just build` does not verify; `just ci-tools &&
   .ci/bin/divbast-verify-frankenphp` does. Renovate moves the digest when
   frankenphp publishes a new `:librespeed`. The binary's own pins (the
-  builder image, `PHP_VERSION`, `CADDY_VERSION`, the three plugins and spc's
-  commit), LibreSpeed's extension list, with gd's FreeType and PNG, which
-  the share image needs, and the in-build checks that hold the binary to
-  all of them live in divbast/frankenphp, the list in its
+  builder image, `PHP_VERSION`, `CADDY_VERSION`, the three plugins,
+  `XCADDY_VERSION`, spc's commit and `LIBAOM_TAG`, an AOM release tag),
+  LibreSpeed's extension list, with gd's FreeType and PNG, which the share
+  image needs, and the in-build checks that hold the binary to all of them
+  live in divbast/frankenphp, the list in its
   `apps/librespeed.env`. **What spc downloads is still chosen at build
   time** there: several libraries, openssl and zlib among them, come from
-  their newest release, and libaom from its main branch
+  their newest release
 - **The binary must never carry a file capability.** The official FrankenPHP build
   carries `cap_net_bind_service=ep`, and a binary with a file capability cannot be
   exec'd at all under `--cap-drop ALL` — it dies with `Operation not permitted`
@@ -277,8 +280,12 @@ breaking change.
   - the reusable workflows: `app-check.yml` (lint; the image built for
     amd64 and arm64 once the binary's attestation verifies; the acceptance
     suite on each under Docker and rootless Podman; the scan),
-    `app-publish.yml` (the daily slot and the button only: push, index,
-    attest, then check `:latest` as an anonymous client pulls it),
+    `app-publish.yml` (the daily slot and the button only: push each
+    architecture; index under `:<version>-staging`; attest; verify by
+    file; promote `:<version>` and `:latest`; then check both as an
+    anonymous client pulls them. A failed attest or verify leaves
+    `:<version>` and `:latest` where they were, and re-running the failed
+    job publishes while the image artifacts last, a day),
     `renovate.yml` and `stall.yml`. `build.yml`, `renovate.yml` and
     `stall.yml` here call them, and keep their own triggers and the
     `required` job;
@@ -322,9 +329,9 @@ breaking change.
 - `just acceptance` — `go test ./test/acceptance/...` against the image
   `just build` wrote, under `ENGINE` (docker unless it says podman).
   `IMAGE=… just acceptance` tests another image; an empty `IMAGE` fails
-  rather than skipping
+  rather than skipping. One test:
   `ENGINE=docker IMAGE=localhost/librespeed:dev mise exec -- go test -run
-  TestRoutes ./test/acceptance/` runs one test
+  TestRoutes ./test/acceptance/`
 - `just test` — build, then the acceptance suite
 - `just lint` — pinact, zizmor, actionlint, ShellCheck and shfmt, the Go
   gates (the compiler, `go vet`, `go fix -diff`, `go mod tidy -diff`,
@@ -345,9 +352,10 @@ breaking change.
   hadolint, ShellCheck, shfmt, actionlint, reuse, just, pinact, trivy and
   zizmor are all listed there. Every justfile recipe but `setup`, which
   installs them, runs through `mise exec`, so a recipe resolves those
-  binaries and not a same-named one on PATH. `gh` is the exception, and
-  only as a local fallback for the API token pinact and zizmor need; CI
-  passes its own
+  binaries and not a same-named one on PATH. The API token pinact and
+  zizmor need is `GITHUB_TOKEN` alone, a fine-grained `github_pat_` token
+  locally or CI's `ghs_`; no recipe falls back to `gh`. See the Local
+  GitHub token section of divbast/ci's README
 - **Go builds with the toolchain mise installs and nothing else.**
   `GOTOOLCHAIN=local` keeps `go.mod`'s line from downloading another. And
   `GOFLAGS=-mod=readonly`, because Composer's `vendor/` sits at the module
