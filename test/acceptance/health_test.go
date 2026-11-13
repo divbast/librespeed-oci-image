@@ -30,7 +30,7 @@ func TestHealthFromHost(t *testing.T) {
 	t.Parallel()
 	e, image := underTest(t)
 	s := serve(t, e, image, spec{health: true})
-	healthzIs(t, s, "telemetry off: GET :8081/healthz", healthy)
+	healthzOK(t, s, "telemetry off: GET :8081/healthz")
 }
 
 // TestHealthFailures checks telemetry on a fresh volume is healthy before
@@ -52,7 +52,7 @@ func TestHealthFailures(t *testing.T) {
 		ctx := t.Context()
 		const fresh = "telemetry on, a fresh volume"
 		tableIs(t, s.C, fresh+": no result has been recorded", emptyResultsTable)
-		healthzIs(t, s, fresh+": GET :8081/healthz", healthy)
+		healthzOK(t, s, fresh+": GET :8081/healthz")
 		if code, out, err := runHealthProbe(ctx, s.C); err != nil {
 			checks.True(fresh+": "+healthProbe+" exits 0", false, err.Error())
 		} else {
@@ -65,7 +65,16 @@ func TestHealthFailures(t *testing.T) {
 		chmodDB(t, s.C, 0o444)
 		healthFails(t, s, "with /data/telemetry.db read-only", "database")
 		chmodDB(t, s.C, 0o644)
-		healthzIs(t, s, "writable again: GET :8081/healthz", healthy)
+		healthzOK(t, s, "writable again: GET :8081/healthz")
+		// Without state.json the check cannot tell whether telemetry is on,
+		// so whether the database is needed, and fails rather than take it
+		// for off (LS-20)
+		moveState(t, s.C, stateFile, stateFile+".aside")
+		body := healthFails(t, s, "with "+stateFile+" gone", "database")
+		harness.Equal(checks, "with "+stateFile+" gone: the reason, and no other check failed",
+			"database: no telling whether telemetry is on", body)
+		moveState(t, s.C, stateFile+".aside", stateFile)
+		healthzOK(t, s, stateFile+" back: GET :8081/healthz")
 		harness.RunRecords(t, s.Probe, "damage-db")
 		healthFails(t, s, "after damage-db", "database")
 		harness.RunRecords(t, s.Probe, "remove-db")
@@ -102,9 +111,9 @@ func healthz(ctx context.Context, s *harness.Serving) (status int, body string, 
 	return resp.Status, strings.TrimSuffix(string(resp.Body), "\n"), nil
 }
 
-// healthzIs checks GET :8081/healthz, from the host, answers want, its
+// healthzOK checks GET :8081/healthz, from the host, answers healthy, its
 // status and body as one.
-func healthzIs(t *testing.T, s *harness.Serving, what, want string) {
+func healthzOK(t *testing.T, s *harness.Serving, what string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
 	status, body, err := healthz(t.Context(), s)
@@ -112,7 +121,7 @@ func healthzIs(t *testing.T, s *harness.Serving, what, want string) {
 		checks.True(what, false, err.Error())
 		return
 	}
-	harness.Equal(checks, what, want, fmt.Sprintf("%d %s", status, body))
+	harness.Equal(checks, what, healthy, fmt.Sprintf("%d %s", status, body))
 }
 
 // healthFails checks /healthz is 503 and names the failed check on a line
@@ -180,6 +189,19 @@ func engineHealthy(t *testing.T, e harness.Engine, image string, c *harness.Cont
 	}
 	harness.Equal(harness.NewChecks(t), scenario+": the engine reports the container healthy within the start period and three intervals",
 		"healthy", found)
+}
+
+// stateFile is where the bootstrap says what it turned on, for the health
+// check.
+const stateFile = generatedDir + "/state.json"
+
+// moveState renames from to to in c, as the server's own uid, which owns
+// both, or fails t.
+func moveState(t *testing.T, c *harness.Container, from, to string) {
+	t.Helper()
+	if _, err := harness.PHPIn(t.Context(), c, fmt.Sprintf(`if (!rename(%q, %q)) { exit(1); }`, from, to)); err != nil {
+		t.Fatalf("mv %s %s: %v", from, to, err)
+	}
 }
 
 // chmodDB sets the mode of the database, as the server's own uid, which
