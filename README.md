@@ -110,6 +110,10 @@ Everything else is a 404: upstream's classic UI, its examples, its
 modern UI, `/index.html` and `/index-modern.html`.
 
 The access log goes to stdout and PHP's errors to stderr, both as JSON.
+The health probe's own request, a `GET /backend/getIP.php` with no query,
+from the container's own `127.0.0.1` every 30 seconds, is left out of the
+access log. A browser's request for it always carries a query, and is
+logged.
 
 **Where visitors' addresses are kept.** Outside the telemetry database, a
 visitor's address can be in two places. The access log
