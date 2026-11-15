@@ -87,7 +87,7 @@ ARG LIBRESPEED_VERSION
 
 # The binary divbast/frankenphp builds for this image, by digest. CI
 # refuses it unless that repository's own build on main attested it.
-COPY --from=ghcr.io/divbast/frankenphp:librespeed@sha256:a5860a9292aadf671d45999339b71d20dc931d47712bab104fb4620f60491f9e --chmod=0755 /frankenphp /usr/local/bin/frankenphp
+COPY --from=ghcr.io/divbast/frankenphp:librespeed@sha256:593893c1df1fa06b28f1fe00650448ebc9309523b0942e980f314ac46480af4b --chmod=0755 /frankenphp /usr/local/bin/frankenphp
 COPY --from=fetch --chown=root:root /out/librespeed /var/www/librespeed
 COPY --from=fetch --chown=root:root /out/librespeed-templates /usr/local/share/librespeed-templates
 # The stats login, outside the served tree. Caddy runs it only through the
