@@ -46,9 +46,11 @@ jobs:
       # LibreSpeed and asks whether its tag still names the pinned commit.
       # The daily slot and the button build it from scratch.
       no-cache-filters: fetch
+      # PHPStan over the image's PHP
+      php: true
     permissions:
       contents: read
-      attestations: read # verify the FrankenPHP binary
+      attestations: read # verify the attestations of the images the Containerfile builds from
       packages: read # the scan asks GitHub whether the published image is absent or private
       security-events: write # code scanning, from main
 
