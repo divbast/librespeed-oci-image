@@ -31,13 +31,21 @@ const (
 	healthPort = 8081
 )
 
+// frankenphp is the image's PHP: the server, and the PHP its probe
+// subcommands and the suite's own run under.
+const frankenphp = "/usr/local/bin/frankenphp"
+
+// phpProbe is LibreSpeed's own probe subcommands, app.php, which the
+// harness writes into a container's /tmp and runs under its PHP.
+var phpProbe = &harness.PHPProbe{Binary: frankenphp, Probe: probe.App}
+
 // serverArgv is the server's argv: what the bootstrap hands over to, with
 // pcntl_exec(SERVER_BIN, ['run', '--config', CADDYFILE]).
-var serverArgv = []string{harness.FrankenPHP, "run", "--config", "/etc/frankenphp/Caddyfile"}
+var serverArgv = []string{frankenphp, "run", "--config", "/etc/frankenphp/Caddyfile"}
 
 // healthCmd is the shipped health probe, as the image's HEALTHCHECK runs
 // it and a Podman user passes it with --health-cmd.
-var healthCmd = []string{harness.FrankenPHP, "php-cli", "/usr/local/bin/librespeed-health"}
+var healthCmd = []string{frankenphp, "php-cli", "/usr/local/bin/librespeed-health"}
 
 // getIPLoopback is what getIP.php answers a client on loopback.
 const getIPLoopback = `{"processedString":"127.0.0.1","rawIspInfo":""}`
@@ -71,8 +79,8 @@ func (sp spec) serveSpec(image string) *harness.ServeSpec {
 			Confine: harness.Contract(tmpfsSize),
 			Env:     sp.env,
 		},
-		AppPort:  appPort,
-		ProbeApp: probe.App,
+		AppPort: appPort,
+		Probe:   harness.ProbeSpec{PHP: phpProbe},
 	}
 	if sp.volume != "" {
 		ss.Run.Mounts = onData(sp.volume)
@@ -250,7 +258,7 @@ func phpOnVolume(t *testing.T, e harness.Engine, image, volume, code string) {
 		Network:    "none",
 		Confine:    harness.Contract(tmpfsSize),
 		Mounts:     onData(volume),
-		Entrypoint: []string{harness.FrankenPHP},
+		Entrypoint: []string{frankenphp},
 		Args:       []string{"php-cli", "-r", code},
 	})
 	if err == nil && res.Code != 0 {
@@ -282,10 +290,15 @@ func refusing(image string, env map[string]string) *harness.RunSpec {
 }
 
 // output runs the probe subcommand sub in p, one that prints what it
-// reads or does rather than records, and returns what it printed. A
-// non-zero exit status is an error, with what the probe said.
+// reads or does rather than records, and returns what it printed: the
+// core probe's http-request, or one of LibreSpeed's own, under the image's
+// PHP. A non-zero exit status is an error, with what the probe said.
 func output(ctx context.Context, p *harness.Probe, sub string, args ...string) (string, error) {
-	res, err := p.Output(ctx, sub, args...)
+	run := p.OutputPHP
+	if sub == "http-request" {
+		run = p.Output
+	}
+	res, err := run(ctx, sub, args...)
 	if err != nil {
 		return "", err
 	}
@@ -302,7 +315,7 @@ const generatedDir = "/tmp/librespeed"
 // generated returns the file the bootstrap generated as name, as the
 // running server reads it.
 func generated(ctx context.Context, c *harness.Container, name string) (string, error) {
-	return harness.PHPIn(ctx, c, fmt.Sprintf(`readfile(%q);`, generatedDir+"/"+name))
+	return harness.PHPIn(ctx, c, frankenphp, fmt.Sprintf(`readfile(%q);`, generatedDir+"/"+name))
 }
 
 // stateIs checks state.json, what the bootstrap turned on for the health

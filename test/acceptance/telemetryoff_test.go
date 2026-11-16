@@ -43,7 +43,7 @@ func TestTelemetryOff(t *testing.T) {
 			harness.StatusIs(t, s, "GET "+path, http.StatusNotFound, path)
 		}
 		stateIs(t, s.C, "state.json", `{"telemetry":false}`)
-		harness.IsFile(t, s.C, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
+		harness.IsFile(t, s.Probe, "no telemetry_settings.php", "absent", generatedDir+"/telemetry_settings.php")
 	})
 
 	t.Run("switches-ignored", func(t *testing.T) {

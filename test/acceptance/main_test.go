@@ -23,16 +23,35 @@ import (
 const sweepWithin = 2 * time.Minute
 
 // TestMain removes every container, network and volume a run that died
-// left behind, before any test starts its own. Without an image there is
-// nothing to sweep for, and no engine is asked.
+// left behind, before any test starts its own, and the probe volumes this
+// run made once the tests are done. Without an image there is nothing to
+// sweep for, and no engine is asked.
 func TestMain(m *testing.M) {
-	if os.Getenv("IMAGE") != "" {
-		if err := sweep(); err != nil {
-			fmt.Fprintln(os.Stderr, "acceptance:", err)
-			os.Exit(1)
-		}
+	if os.Getenv("IMAGE") == "" {
+		os.Exit(m.Run())
 	}
-	m.Run()
+	if err := sweep(); err != nil {
+		fmt.Fprintln(os.Stderr, "acceptance:", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	if err := removeProbeVolumes(); err != nil {
+		fmt.Fprintln(os.Stderr, "acceptance:", err)
+		code = max(code, 1)
+	}
+	os.Exit(code)
+}
+
+// removeProbeVolumes is [harness.Engine.RemoveProbeVolumes] under the
+// engine $ENGINE names.
+func removeProbeVolumes() error {
+	e, err := harness.EngineFromEnv()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sweepWithin)
+	defer cancel()
+	return e.RemoveProbeVolumes(ctx)
 }
 
 // sweep is [harness.Engine.Sweep] under the engine $ENGINE names.

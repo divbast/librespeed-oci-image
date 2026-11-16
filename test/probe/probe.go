@@ -9,9 +9,10 @@ import (
 	_ "embed" // for App
 )
 
-// App is app.php: PHP that returns LibreSpeed's subcommands. The harness's
-// InstallProbe puts it beside its core probe, which adds them to its own,
-// and the contract suite takes it as Config.ProbeApp.
+// App is app.php: PHP that returns LibreSpeed's subcommands. The harness
+// writes it beside its PHP probe, probe.php, which runs them under the
+// image's PHP, given as a harness.PHPProbe, and the contract suite takes
+// it as Config.PHP.
 //
 //go:embed app.php
 var App []byte

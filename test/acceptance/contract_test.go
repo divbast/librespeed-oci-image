@@ -12,7 +12,6 @@ import (
 
 	"github.com/divbast/ci/contract"
 	"github.com/divbast/ci/harness"
-	"github.com/divbast/librespeed-oci-image/test/probe"
 )
 
 // libreSpeed is LibreSpeed's contract, as its Containerfile and README
@@ -25,6 +24,7 @@ func libreSpeed(image string, ready func(context.Context, *harness.Container, *h
 		HealthPort: healthPort,
 		TmpfsSize:  tmpfsSize,
 		PID1:       serverArgv,
+		Exec:       []string{frankenphp, "version"},
 		HealthCmd:  healthCmd,
 		Healthcheck: contract.Healthcheck{
 			Test:        slices.Concat([]string{"CMD"}, healthCmd),
@@ -34,7 +34,7 @@ func libreSpeed(image string, ready func(context.Context, *harness.Container, *h
 			Retries:     3,
 		},
 		ReadyProbe:    ready,
-		ProbeApp:      probe.App,
+		PHP:           phpProbe,
 		HealthOnly404: []string{"/", "/backend/getIP.php", "/index.php"},
 		Scenario:      "telemetry off",
 	}
