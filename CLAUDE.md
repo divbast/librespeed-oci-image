@@ -316,8 +316,9 @@ breaking change.
     `divbast-publish-decision`, `divbast-stall` and the rest;
   - the acceptance `harness` and the `contract` suite, which `go.mod`
     requires through `replace github.com/divbast/ci => ./.ci`, and the
-    probe's `harness/probe/core.php`, beside which `test/probe/app.php`
-    runs;
+    probes: the static Go core probe the harness builds from
+    `harness/probe/core`, and the PHP probe `harness/probe/php/probe.php`,
+    beside which `test/probe/app.php` runs;
   - `go/golangci.yml`, the one golangci-lint configuration, and
     `.github/actionlint.yaml`.
 
@@ -489,8 +490,9 @@ breaking change.
   tests, or two suites on one host, ask for the same one; the assertions
   (`StatusIs`, `Contains`, `Refuses` and the rest) are the harness's too,
   shared with every divbast image. What a test runs inside a container is a
-  probe subcommand: ci's `core.php`, or LibreSpeed's own in
-  `test/probe/app.php`, which PHPStan analyses at level max
+  probe subcommand: one of ci's Go core probe, or one of LibreSpeed's own
+  in `test/probe/app.php`, which ci's `probe.php` runs under the image's
+  PHP and PHPStan analyses at level max
 - **Go is modern and idiomatic, and linted strictly**, under ci's
   `go/golangci.yml`. Bash is for what is short and will stay so: the
   justfile's recipes. A check that runs inside a Containerfile build stage
