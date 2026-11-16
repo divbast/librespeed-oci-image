@@ -26,10 +26,11 @@ and the binary in it, yourself.
 | Property | Value |
 |---|---|
 | Capabilities | none (`--cap-drop ALL`) |
+| Privileges | no new ones (`--security-opt no-new-privileges`), under the engine's seccomp filter |
 | Root filesystem | read-only |
 | User | uid/gid 65532 (`nonroot`) |
 | Port | 8080 (speed test), 8081 (health, do not publish), and nothing else listens: Caddy's admin API is off |
-| tmpfs required | `/tmp`, 16 MiB (`--tmpfs /tmp:size=16m`) |
+| tmpfs required | `/tmp`, 16 MiB, which nothing can run from (`--tmpfs /tmp:size=16m,noexec,nosuid,nodev`) |
 | Volume | `/data`, required only with `TELEMETRY=true` |
 | Processes | one: FrankenPHP, as PID 1 |
 | Shell in image | none |
@@ -60,9 +61,10 @@ never the container.
 
 ```bash
 podman run -d --name librespeed \
-  --cap-drop ALL --read-only \
+  --cap-drop ALL --read-only --read-only-tmpfs=false \
+  --security-opt no-new-privileges \
   --user 65532:65532 \
-  --tmpfs /tmp:size=16m \
+  --tmpfs /tmp:size=16m,noexec,nosuid,nodev \
   -p 8080:8080 \
   ghcr.io/divbast/librespeed:6.3.1
 ```
@@ -72,15 +74,32 @@ links and read them back on a stats page:
 
 ```bash
 podman run -d --name librespeed \
-  --cap-drop ALL --read-only \
+  --cap-drop ALL --read-only --read-only-tmpfs=false \
+  --security-opt no-new-privileges \
   --user 65532:65532 \
-  --tmpfs /tmp:size=16m \
+  --tmpfs /tmp:size=16m,noexec,nosuid,nodev \
   -v librespeed-data:/data \
   -p 8080:8080 \
   -e TELEMETRY=true \
   -e STATS_PASSWORD=... \
   -e GDPR_EMAIL=privacy@example.org \
   ghcr.io/divbast/librespeed:6.3.1
+```
+
+`--read-only-tmpfs=false` is Podman's alone: without it, Podman mounts
+writable tmpfs of its own at `/run`, `/var/tmp` and elsewhere beside the
+read-only root. Docker takes the same commands without it. Under a
+Quadlet, the same confinement is:
+
+```
+[Container]
+DropCapability=all
+ReadOnly=true
+ReadOnlyTmpfs=false
+NoNewPrivileges=true
+User=65532
+Group=65532
+Tmpfs=/tmp:size=16m,noexec,nosuid,nodev
 ```
 
 A named volume takes `/data`'s owner, uid 65532, from the image. A host

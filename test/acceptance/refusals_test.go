@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/divbast/ci/harness"
-	"github.com/divbast/librespeed-oci-image/test/probe"
 )
 
 // TestBadTelemetryRefused checks a TELEMETRY that is neither true nor
@@ -55,13 +54,14 @@ func TestInvalidUTF8Refused(t *testing.T) {
 		Image:      image,
 		Network:    "none",
 		Confine:    harness.Contract(tmpfsSize),
-		Entrypoint: []string{harness.FrankenPHP},
+		Entrypoint: []string{frankenphp},
 		Args:       []string{"php-cli", "-r", "sleep(600);"},
+		Probe:      &harness.ProbeSpec{PHP: phpProbe},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := harness.InstallProbe(ctx, c, probe.App)
+	p, err := harness.AttachProbe(ctx, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestInvalidUTF8Refused(t *testing.T) {
 	}
 
 	const nothing = "every refusal came before the bootstrap wrote anything"
-	written, err := harness.PHPIn(ctx, c, `echo is_dir("/tmp/librespeed") ? "present" : "absent";`)
+	written, err := harness.PHPIn(ctx, c, frankenphp, `echo is_dir("/tmp/librespeed") ? "present" : "absent";`)
 	if err != nil {
 		checks.True(nothing, false, err.Error())
 		return
@@ -112,7 +112,7 @@ func bootstrapWith(t *testing.T, p *harness.Probe, hexValues map[string]string) 
 	if err != nil {
 		return bootstrapRun{}, err
 	}
-	res, err := p.Output(t.Context(), "bootstrap-with", string(assignments))
+	res, err := p.OutputPHP(t.Context(), "bootstrap-with", string(assignments))
 	if err != nil {
 		return bootstrapRun{}, err
 	}

@@ -114,7 +114,7 @@ func TestPHPSettings(t *testing.T) {
 // readINI runs the probe's php-ini in s.
 func readINI(t *testing.T, s *harness.Serving) (phpINI, error) {
 	t.Helper()
-	res, err := s.Probe.Output(t.Context(), "php-ini")
+	res, err := s.Probe.OutputPHP(t.Context(), "php-ini")
 	if err != nil {
 		return phpINI{}, err
 	}
@@ -133,7 +133,7 @@ func readINI(t *testing.T, s *harness.Serving) (phpINI, error) {
 // out, and where the speed test's own access log goes.
 func serverLogging(t *testing.T, s *harness.Serving) (string, error) {
 	t.Helper()
-	res, err := s.C.Exec(t.Context(), nil, harness.FrankenPHP, "adapt", "--config", "/etc/frankenphp/Caddyfile")
+	res, err := s.C.Exec(t.Context(), nil, frankenphp, "adapt", "--config", "/etc/frankenphp/Caddyfile")
 	if err != nil {
 		return "", err
 	}

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/divbast/ci/harness"
-	"github.com/divbast/librespeed-oci-image/test/probe"
 )
 
 // TestTrustedProxies checks a server behind a proxy TRUSTED_PROXIES names
@@ -93,6 +92,7 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 		Image:   image,
 		Network: network,
 		Confine: harness.Contract(tmpfsSize),
+		Probe:   &harness.ProbeSpec{PHP: phpProbe},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func behindProxy(t *testing.T, e harness.Engine, image string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := harness.InstallProbe(ctx, proxy, probe.App)
+	p, err := harness.AttachProbe(ctx, proxy)
 	if err != nil {
 		t.Fatal(err)
 	}

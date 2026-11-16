@@ -75,13 +75,13 @@ func TestHealthFailures(t *testing.T) {
 			"database: no telling whether telemetry is on", body)
 		moveState(t, s.C, stateFile+".aside", stateFile)
 		healthzOK(t, s, stateFile+" back: GET :8081/healthz")
-		harness.RunRecords(t, s.Probe, "damage-db")
+		harness.RunPHPRecords(t, s.Probe, "damage-db")
 		healthFails(t, s, "after damage-db", "database")
-		harness.RunRecords(t, s.Probe, "remove-db")
+		harness.RunPHPRecords(t, s.Probe, "remove-db")
 		healthFails(t, s, "after remove-db", "database")
 		// Asked, twice over, the check made no database, so a missing one
 		// stays missing until upstream records a result
-		harness.IsFile(t, s.C, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
+		harness.IsFile(t, s.Probe, "after remove-db and /healthz: /data/telemetry.db", "absent", telemetryDB)
 	})
 
 	t.Run("operator-ini", func(t *testing.T) {
@@ -199,7 +199,7 @@ const stateFile = generatedDir + "/state.json"
 // both, or fails t.
 func moveState(t *testing.T, c *harness.Container, from, to string) {
 	t.Helper()
-	if _, err := harness.PHPIn(t.Context(), c, fmt.Sprintf(`if (!rename(%q, %q)) { exit(1); }`, from, to)); err != nil {
+	if _, err := harness.PHPIn(t.Context(), c, frankenphp, fmt.Sprintf(`if (!rename(%q, %q)) { exit(1); }`, from, to)); err != nil {
 		t.Fatalf("mv %s %s: %v", from, to, err)
 	}
 }
@@ -208,7 +208,7 @@ func moveState(t *testing.T, c *harness.Container, from, to string) {
 // owns it, or fails t.
 func chmodDB(t *testing.T, c *harness.Container, mode int) {
 	t.Helper()
-	if _, err := harness.PHPIn(t.Context(), c, fmt.Sprintf(`if (!chmod(%q, 0%s)) { exit(1); }`, telemetryDB, strconv.FormatInt(int64(mode), 8))); err != nil {
+	if _, err := harness.PHPIn(t.Context(), c, frankenphp, fmt.Sprintf(`if (!chmod(%q, 0%s)) { exit(1); }`, telemetryDB, strconv.FormatInt(int64(mode), 8))); err != nil {
 		t.Fatalf("chmod %o %s: %v", mode, telemetryDB, err)
 	}
 }

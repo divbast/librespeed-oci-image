@@ -134,7 +134,7 @@ func TestTelemetry(t *testing.T) {
 		pngIs(t, s, "GET /results/index.php?id="+first, "/results/index.php?id="+first)
 		// The modern UI's share link
 		pngIs(t, s, fmt.Sprintf("GET /results/?id=%s&style=modern", first), fmt.Sprintf("/results/?id=%s&style=modern", first))
-		harness.IsFile(t, s.C, "/data/telemetry.db", "present", telemetryDB)
+		harness.IsFile(t, s.Probe, "/data/telemetry.db", "present", telemetryDB)
 		rowIs(t, s, fmt.Sprintf("row %s as stored, unredacted", first), first,
 			[]string{"ip", "dl", "extra", "log"},
 			fmt.Sprintf(`{"ip":%q,"dl":%q,"extra":"{\"server\":\"local\"}","log":"","ip_in_ispinfo":true}`, resultClient, resultDL))
@@ -193,7 +193,7 @@ func TestTelemetry(t *testing.T) {
 
 		// What the health check sees. A damaged database records nothing;
 		// once it is gone, upstream makes a new one with the next result.
-		harness.RunRecords(t, s.Probe, "damage-db")
+		harness.RunPHPRecords(t, s.Probe, "damage-db")
 		got, err := postResult(ctx, s)
 		if err != nil {
 			checks.True("POST /results/telemetry.php to a damaged database: curl exit, status", false, err.Error())
@@ -202,7 +202,7 @@ func TestTelemetry(t *testing.T) {
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database: curl exit, status", http.StatusOK, got.status)
 			harness.Equal(checks, "POST /results/telemetry.php to a damaged database records nothing", "", got.body)
 		}
-		harness.RunRecords(t, s.Probe, "remove-db")
+		harness.RunPHPRecords(t, s.Probe, "remove-db")
 		id, _ := recordResult(t, s, "a result after remove-db")
 		harness.Equal(checks, "the first result in a new database", "1", id)
 	})
@@ -367,7 +367,7 @@ func rowIs(t *testing.T, s *harness.Serving, what, id string, keys []string, wan
 // telemetry_settings.php, as upstream's scripts see them once they require
 // it.
 func telemetrySettings(ctx context.Context, c *harness.Container) (string, error) {
-	return harness.PHPIn(ctx, c, `require "`+generatedDir+`/telemetry_settings.php";
+	return harness.PHPIn(ctx, c, frankenphp, `require "`+generatedDir+`/telemetry_settings.php";
 		echo json_encode(compact("db_type", "stats_password", "enable_id_obfuscation",
 			"redact_ip_addresses", "Sqlite_db_file")), "\n";`)
 }
@@ -390,7 +390,7 @@ func statsPassword(generated string) string {
 func tableIs(t *testing.T, c *harness.Container, what, want string) {
 	t.Helper()
 	checks := harness.NewChecks(t)
-	got, err := harness.PHPIn(t.Context(), c, `function db(): PDO { return new PDO("sqlite:`+telemetryDB+`", null, null,
+	got, err := harness.PHPIn(t.Context(), c, frankenphp, `function db(): PDO { return new PDO("sqlite:`+telemetryDB+`", null, null,
 			[PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]); }
 		echo json_encode(["columns" => array_column(db()->query("PRAGMA table_info(speedtest_users)")->fetchAll(), "name"),
 			"rows" => (int) db()->query("SELECT COUNT(*) FROM speedtest_users")->fetchColumn()]), "\n";`)

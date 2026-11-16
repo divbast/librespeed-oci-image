@@ -109,7 +109,7 @@ func (b *browser) session() string {
 // client=count lines, by client. It opens the database read-only, so it
 // never creates one.
 func failureBuckets(ctx context.Context, c *harness.Container) (string, error) {
-	out, err := harness.PHPIn(ctx, c, `echo json_encode((new PDO("sqlite:/data/stats-login.db", null, null,
+	out, err := harness.PHPIn(ctx, c, frankenphp, `echo json_encode((new PDO("sqlite:/data/stats-login.db", null, null,
 			[PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, Pdo\Sqlite::ATTR_OPEN_FLAGS => Pdo\Sqlite::OPEN_READONLY]))
 		->query("SELECT client, COUNT(*) FROM failures WHERE at > " . (time() - 900) . " GROUP BY client ORDER BY client")
 		->fetchAll(PDO::FETCH_KEY_PAIR), JSON_FORCE_OBJECT), "\n";`)
@@ -163,7 +163,7 @@ func TestStatsLogin(t *testing.T) {
 		ctx := t.Context()
 
 		const stored = "/data/stats-password.hash"
-		if hash, err := harness.PHPIn(ctx, s.C, `const HASH = "/data/stats-password.hash";
+		if hash, err := harness.PHPIn(ctx, s.C, frankenphp, `const HASH = "/data/stats-password.hash";
 			echo json_encode(["mode" => sprintf("%04o", (int) @fileperms(HASH) & 0o7777),
 				"algo" => password_get_info((string) @file_get_contents(HASH))["algoName"],
 				"verifies" => password_verify("`+statsPasswordValue+`", (string) @file_get_contents(HASH)),
@@ -176,7 +176,7 @@ func TestStatsLogin(t *testing.T) {
 		// The server starts without it, so no PHP the server runs can read
 		// it back. TELEMETRY shows the environment was read at all.
 		const environment = "the server's environment"
-		if environ, err := harness.PHPIn(ctx, s.C, `const ENVIRON = "/proc/1/environ";
+		if environ, err := harness.PHPIn(ctx, s.C, frankenphp, `const ENVIRON = "/proc/1/environ";
 			echo json_encode(["read" => @file_get_contents(ENVIRON) !== false,
 				"TELEMETRY" => str_contains((string) @file_get_contents(ENVIRON), "TELEMETRY=true"),
 				"STATS_PASSWORD" => str_contains((string) @file_get_contents(ENVIRON), "STATS_PASSWORD=")]), "\n";`); err != nil {
@@ -189,11 +189,11 @@ func TestStatsLogin(t *testing.T) {
 		// minutes unused is collected at the next visit, so visits cannot
 		// pile them up there (LS-13).
 		const stale = "/tmp/sess_ls13stale"
-		if _, err := harness.PHPIn(ctx, s.C, fmt.Sprintf(`if (!touch(%q, time() - 1500)) { exit(1); }`, stale)); err != nil {
+		if _, err := harness.PHPIn(ctx, s.C, frankenphp, fmt.Sprintf(`if (!touch(%q, time() - 1500)) { exit(1); }`, stale)); err != nil {
 			t.Fatalf("touch %s: %v", stale, err)
 		}
 		harness.StatusIs(t, s, "GET /results/stats.php", http.StatusOK, statsPath)
-		harness.IsFile(t, s.C, "a session file 25 minutes unused, after the next visit", "absent", stale)
+		harness.IsFile(t, s.Probe, "a session file 25 minutes unused, after the next visit", "absent", stale)
 		b := newBrowser(t, s)
 		page, err := b.page(ctx)
 		if err != nil {
@@ -243,7 +243,7 @@ func TestStatsLogin(t *testing.T) {
 		// A login gone 24 minutes without a visit ends. PHP reads the
 		// session before it collects it, so the next visit still shows the
 		// page, and the one after asks for the password again (LS-13).
-		if _, aerr := harness.PHPIn(ctx, s.C, `foreach (glob("/tmp/sess_*") as $f) { if (!touch($f, time() - 1500)) { exit(1); } }`); aerr != nil {
+		if _, aerr := harness.PHPIn(ctx, s.C, frankenphp, `foreach (glob("/tmp/sess_*") as $f) { if (!touch($f, time() - 1500)) { exit(1); } }`); aerr != nil {
 			t.Fatalf("ageing the session files: %v", aerr)
 		}
 		for _, visit := range []struct {
@@ -323,7 +323,7 @@ func TestStatsLogin(t *testing.T) {
 				leavesStats(t, s, method, exit.path, exit.target, secret)
 			}
 		}
-		harness.RunRecords(t, s.Probe, "age-failures", "901")
+		harness.RunPHPRecords(t, s.Probe, "age-failures", "901")
 	})
 
 	t.Run("changed", func(t *testing.T) {

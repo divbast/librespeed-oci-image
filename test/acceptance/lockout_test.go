@@ -121,7 +121,7 @@ func TestLockout(t *testing.T) {
 		s := serve(t, e, image, sp)
 		b := newBrowser(t, s)
 		b.loginIs(t, "after a restart: the right password", http.StatusTooManyRequests, statsPasswordValue, nil)
-		harness.RunRecords(t, s.Probe, "age-failures", "901")
+		harness.RunPHPRecords(t, s.Probe, "age-failures", "901")
 		b.loginIs(t, "after age-failures 901: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 
 		// A second client, apart from this host: the server's own loopback
@@ -177,7 +177,7 @@ func betweenThreads(t *testing.T, s *harness.Serving, b *browser) {
 	t.Helper()
 	ctx := t.Context()
 	checks := harness.NewChecks(t)
-	harness.RunRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "16")
+	harness.RunPHPRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "16")
 
 	type answered struct {
 		status int
@@ -231,7 +231,7 @@ func betweenThreads(t *testing.T, s *harness.Serving, b *browser) {
 	bucketsAre(t, s.C, "login B recorded nothing", "127.0.0.1=1")
 
 	// PHP 8.5's default cost, as the bootstrap writes it
-	harness.RunRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "12")
+	harness.RunPHPRecords(t, s.Probe, "write-stats-hash", statsPasswordValue, "12")
 	b.loginIs(t, "with the hash back at cost 12, the lock free: the right password", http.StatusSeeOther, statsPasswordValue, nil)
 }
 
@@ -406,7 +406,7 @@ func clientIPOptionsAre(t *testing.T, c *harness.Container, what, want string) {
 // clientIPOptions returns, as JSON, the client-address options of every
 // server in c's own Caddyfile, as the server adapts it.
 func clientIPOptions(ctx context.Context, c *harness.Container) (string, error) {
-	res, err := c.Exec(ctx, nil, harness.FrankenPHP, "adapt", "--config", "/etc/frankenphp/Caddyfile")
+	res, err := c.Exec(ctx, nil, frankenphp, "adapt", "--config", "/etc/frankenphp/Caddyfile")
 	if err != nil {
 		return "", err
 	}

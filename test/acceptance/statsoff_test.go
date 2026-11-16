@@ -149,7 +149,7 @@ func TestStatsWithoutPassword(t *testing.T) {
 				leavesStats(t, s, method, exit.path, exit.target, statsPasswordValue)
 			}
 		}
-		harness.IsFile(t, s.C, "no /data/stats-password.hash", "absent", statsPasswordHash)
+		harness.IsFile(t, s.Probe, "no /data/stats-password.hash", "absent", statsPasswordHash)
 	})
 
 	t.Run("telemetry-off", func(t *testing.T) {

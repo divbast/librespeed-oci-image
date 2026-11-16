@@ -53,12 +53,14 @@ breaking change.
 | Property | Value |
 |---|---|
 | Capabilities | **none** (`--cap-drop ALL`) |
+| Privileges | **no new ones** (`--security-opt no-new-privileges`), under the engine's **seccomp** filter |
 | Root filesystem | **read-only** |
 | User | uid/gid **65532**, never root |
 | Listen port | **8080** for the speed test — never 80 |
 | Health port | **8081** — health only, never serves the speed test, meant to stay unpublished |
 | Other listeners | **none**: Caddy's admin API is **off** (`admin off`) |
-| tmpfs required | exactly one: `/tmp`, at **16 MiB** |
+| tmpfs required | exactly one: `/tmp`, at **16 MiB**, `noexec,nosuid,nodev` |
+| Writable mounts | `/tmp` and `/data` alone, and nothing written to `/tmp` can run; on Podman, `--read-only-tmpfs=false` |
 | Volume | `/data`, required **only with `TELEMETRY=true`**, and then the bootstrap refuses to start without a writable one and logs why |
 | Outbound network | **none** |
 | Shell, package manager | **none** |
@@ -200,13 +202,13 @@ breaking change.
   reaches the image
 - **The FrankenPHP binary is divbast/frankenphp's, by digest.** The runtime
   stage copies it from `ghcr.io/divbast/frankenphp:librespeed@sha256:…`.
-  Before `app-check.yml` builds anything, `divbast-verify-frankenphp` has gh
+  Before `app-check.yml` builds anything, `divbast-verify-images` has gh
   verify that frankenphp's own `build.yml`, on its main, attested that
-  digest. It counts every mention of the image in the Containerfile's
-  instructions, wherever it stands, and refuses all but exactly one, that
-  `COPY`'s `--from=`: never name the image in an `ARG`, a `LABEL` or a
-  `RUN`. A local `just build` does not verify; `just ci-tools &&
-  .ci/bin/divbast-verify-frankenphp` does. Renovate moves the digest when
+  digest, and cosign that the distroless project signed the runtime's. It
+  refuses any image not pinned by digest, and the FrankenPHP image named
+  anywhere but that `COPY`'s `--from=`: never name it in an `ARG`, a
+  `LABEL` or a `RUN`. A local `just build` does not verify; `just ci-tools
+  && .ci/bin/divbast-verify-images` does, with cosign from `mise.toml`. Renovate moves the digest when
   frankenphp publishes a new `:librespeed`. The binary's own pins (the
   builder image, `PHP_VERSION`, `CADDY_VERSION`, the three plugins,
   `XCADDY_VERSION`, spc's commit and `LIBAOM_TAG`, an AOM release tag),
@@ -294,7 +296,7 @@ breaking change.
   at: a release's full SHA, with its tag as the comment. Its README is the
   reference for all of it:
   - the reusable workflows: `app-check.yml` (lint; the image built for
-    amd64 and arm64 once the binary's attestation verifies; the acceptance
+    amd64 and arm64 once every image it builds from verifies; the acceptance
     suite on each under Docker and rootless Podman; the scan),
     `app-publish.yml` (the daily slot and the button only: push each
     architecture; index under `:<version>-staging`; attest; verify by
@@ -309,7 +311,7 @@ breaking change.
     `.ci/just/app.just`. Recipes here call them from a recipe's body, never
     as a dependency, so the justfile still parses before `.ci` exists;
   - the Go tools, which `just ci-tools` builds into `.ci/bin/`, run from
-    this repository's root: `divbast-pin`, `divbast-verify-frankenphp`,
+    this repository's root: `divbast-pin`, `divbast-verify-images`,
     `divbast-scan`, `divbast-published-revision`,
     `divbast-publish-decision`, `divbast-stall` and the rest;
   - the acceptance `harness` and the `contract` suite, which `go.mod`
@@ -339,9 +341,9 @@ breaking change.
   pin, then install the pinned toolchain and PHPStan. One command on a
   fresh clone, and again whenever the pin moves; `just lint` fails, naming
   it, when `.ci` is not at the pinned commit (`ci-fresh`)
-- `just build` — build the image locally. It does not verify the binary's
-  attestation; `just ci-tools && .ci/bin/divbast-verify-frankenphp` does,
-  with gh 2.102.0 or newer
+- `just build` — build the image locally. It does not verify the images it
+  builds from; `just ci-tools && .ci/bin/divbast-verify-images` does, with
+  gh 2.102.0 or newer and cosign from `mise.toml`
 - `just acceptance` — `go test ./test/acceptance/...` against the image
   `just build` wrote, under `ENGINE` (docker unless it says podman).
   `just IMAGE=… acceptance` tests another image. `IMAGE` is a plain value,
@@ -476,7 +478,8 @@ breaking change.
   together
 - **The acceptance suite is Go, on divbast/ci's harness.** Every
   container it starts runs under `harness.Contract("16m")`, the *exact*
-  confinement the contract claims, `--tmpfs /tmp:size=16m` included, so a
+  confinement the contract claims, `--security-opt no-new-privileges` and
+  `--tmpfs /tmp:size=16m,noexec,nosuid,nodev` included, so a
   check can never pass under looser settings than we ship. What CI proves
   is what ships. `TestContract` runs ci's contract suite against the image;
   the other tests are LibreSpeed's own, one topic per file, and run in

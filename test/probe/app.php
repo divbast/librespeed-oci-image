@@ -6,17 +6,18 @@
 declare(strict_types=1);
 
 /*
- * LibreSpeed's own subcommands for divbast's in-container probe. The
- * harness installs this beside its core.php, which requires it and adds
- * what it returns to its own subcommands:
+ * LibreSpeed's own subcommands for divbast's in-container probe, which
+ * must run under the image's own PHP. The harness writes this beside its
+ * PHP probe, probe.php, in the container's /tmp, which requires it and
+ * runs what it returns:
  *
- *     frankenphp php-cli core.php <subcommand> [arguments]
+ *     frankenphp php-cli probe.php <subcommand> [arguments]
  *
  * damage-db, remove-db, age-failures and write-stats-hash assert what
- * they did, in core.php's records. The rest print what they read or do,
+ * they did, in probe.php's records. The rest print what they read or do,
  * and assert nothing. A subcommand given the wrong arguments throws, which
- * core.php records as a failure. Each may use what core.php defines: its
- * Assertions, readOrThrow() and httpRequest().
+ * probe.php records as a failure. Each may use what probe.php defines:
+ * its Assertions, readOrThrow() and httpRequest().
  */
 
 final class LibreSpeedProbe
@@ -292,7 +293,7 @@ final class LibreSpeedProbe
     }
 
     /**
-     * core.php's http-request, sent while this process holds the lock
+     * probe.php's httpRequest(), sent while this process holds the lock
      * login.php takes to check a password, as another login being checked
      * would hold it. It waits up to LOCK_WITHIN seconds for a check already
      * under way, and lets go once the answer is in, or the request fails.
@@ -402,7 +403,7 @@ final class LibreSpeedProbe
     }
 
     /**
-     * The operands, when there is one for each name, which core.php leaves
+     * The operands, when there is one for each name, which probe.php leaves
      * to the app to check.
      *
      * @param list<string> $operands
