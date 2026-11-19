@@ -36,3 +36,4 @@ jobs:
       checks: read # read each pull request's check runs
       statuses: read # and its commit statuses
       packages: read # tell a private image from an absent one
+      issues: read # read the Dependency Dashboard
