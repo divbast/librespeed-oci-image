@@ -369,8 +369,8 @@ breaking change.
 ## Where the toolchain comes from
 
 - **`mise.toml` is where tool versions are written.** Go, golangci-lint,
-  hadolint, ShellCheck, shfmt, actionlint, reuse, just, pinact, trivy and
-  zizmor are all listed there. Every justfile recipe but `setup`, which
+  hadolint, ShellCheck, shfmt, actionlint, reuse, just, pinact, trivy,
+  grype and zizmor are all listed there. Every justfile recipe but `setup`, which
   installs them, runs through `mise exec`, so a recipe resolves those
   binaries and not a same-named one on PATH. The API token pinact and
   zizmor need is `GITHUB_TOKEN` alone, a fine-grained `github_pat_` token

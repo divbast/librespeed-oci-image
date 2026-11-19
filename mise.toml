@@ -14,6 +14,9 @@
 
 "aqua:suzuki-shunsuke/pinact" = "5.0.2"
 "aqua:aquasecurity/trivy" = "0.76.2"
+# For divbast-scan, in app-check.yml's scan job: grype scans an image
+# whose base says ID=dhi, Docker's own model, which Trivy cannot read
+"aqua:anchore/grype" = "0.122.1"
 "aqua:zizmorcore/zizmor" = "1.32.0"
 # For divbast-verify-images, which app-check.yml's build job runs: it
 # verifies the distroless runtime's signature
