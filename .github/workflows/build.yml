@@ -40,7 +40,7 @@ concurrency:
 jobs:
   check:
     name: check
-    uses: divbast/ci/.github/workflows/app-check.yml@0f7985f17f95d99e1928539dc53f381d46f934c9 # v3.9.0
+    uses: divbast/ci/.github/workflows/app-check.yml@bde821963cf2fb32e1ca67337e5b84ae1114ac1a # v3.12.0
     with:
       # The one stage that reaches outside this repository: it fetches
       # LibreSpeed and asks whether its tag still names the pinned commit.
@@ -83,7 +83,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main'
       && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    uses: divbast/ci/.github/workflows/app-publish.yml@0f7985f17f95d99e1928539dc53f381d46f934c9 # v3.9.0
+    uses: divbast/ci/.github/workflows/app-publish.yml@bde821963cf2fb32e1ca67337e5b84ae1114ac1a # v3.12.0
     with:
       image: ghcr.io/divbast/librespeed
       version-arg: LIBRESPEED_VERSION
