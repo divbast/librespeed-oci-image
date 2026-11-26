@@ -20,7 +20,7 @@
 "aqua:zizmorcore/zizmor" = "1.33.1"
 # For divbast-verify-images, which app-check.yml's build job runs: it
 # verifies the distroless runtime's signature
-"aqua:sigstore/cosign" = "3.1.5"
+"aqua:sigstore/cosign" = "3.1.6"
 
 [env]
 # The toolchain is the one pinned above, never one go.mod's toolchain line
