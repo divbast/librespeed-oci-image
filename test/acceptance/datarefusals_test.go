@@ -12,7 +12,7 @@ import (
 )
 
 // The bootstrap's words for a /data that uid 65532 cannot write.
-const needsWritableData = "needs a writable /data volume"
+const needsWritableData = "needs a writable /data volume (uid 65532)"
 
 // TestDataRefusals checks TELEMETRY=true refuses a /data that uid 65532
 // cannot write, and a database or salt the server could not use: each
