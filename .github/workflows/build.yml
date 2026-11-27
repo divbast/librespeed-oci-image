@@ -17,13 +17,14 @@ on:
     # The daily slot, and the only automatic publish: it publishes main when
     # main moved since the commit the published :latest was built from, so
     # users see at most one new image a day however many merges land. It
-    # also checks whether something outside this repository has changed:
-    # the LibreSpeed tag and the commit it names, the runner images, or the
+    # also checks whether something outside this repository has changed: the
+    # LibreSpeed tag and the commit it names, the runner images, or the
     # vulnerability database the scan reads, so a new advisory against the
     # pinned image reaches code scanning within a day rather than a week.
     # 18:47 UTC is 05:47 in Melbourne under daylight saving, 04:47 outside
-    # it: 30 minutes after the Baikal image's slot, so the two images' runs
-    # do not share the organisation's 20 concurrent jobs.
+    # it: 30 minutes after the Baikal image's slot. GitHub starts scheduled
+    # runs late and in batches, so runs set apart this way are less likely
+    # to start together.
     - cron: '47 18 * * *'
   # The button: run from main, it publishes now, for an urgent fix.
   workflow_dispatch:
