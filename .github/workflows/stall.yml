@@ -26,7 +26,7 @@ concurrency:
 jobs:
   stall:
     name: stall
-    uses: divbast/ci/.github/workflows/stall.yml@1d5fa7d401986beee704969aa1f41c763c304e9b # v4.33.0
+    uses: divbast/ci/.github/workflows/stall.yml@82460d8340120206e7072268f9db52a240fc1be4 # v4.34.0
     with:
       published: ghcr.io/divbast/librespeed:latest
     permissions:
