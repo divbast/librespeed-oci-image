@@ -162,7 +162,7 @@ function toJson(array|stdClass $value): string {
  * and record nothing.
  */
 function requireWritableData(): void {
-    $needs = 'TELEMETRY=true needs a writable ' . DATA_DIR . ' volume (uid ' . getmyuid() . ')';
+    $needs = 'TELEMETRY=true needs a writable ' . DATA_DIR . ' volume (uid ' . posix_geteuid() . ')';
     if (!is_dir(DATA_DIR)) {
         fail("$needs, and there is no " . DATA_DIR . ' directory');
     }
@@ -186,7 +186,7 @@ function requireUsable(string $path, bool $write): void {
         return;
     }
     if (!is_file($path) || !is_readable($path) || ($write && !is_writable($path))) {
-        fail("$path is there, but uid " . getmyuid() . ' cannot ' . ($write ? 'read and write' : 'read') . ' it');
+        fail("$path is there, but uid " . posix_geteuid() . ' cannot ' . ($write ? 'read and write' : 'read') . ' it');
     }
 }
 
@@ -518,12 +518,12 @@ if ($telemetry) {
 
 foreach ([GENERATED_DIR, GENERATED_DIR . '/caddy'] as $dir) {
     if (!is_dir($dir) && !@mkdir($dir, 0o700)) {
-        fail("cannot create $dir - is /tmp a tmpfs writable by uid " . getmyuid() . '?');
+        fail("cannot create $dir - is /tmp a tmpfs writable by uid " . posix_geteuid() . '?');
     }
     // mkdir() honours the umask, and a directory left by an earlier start
     // keeps whatever mode it had.
     if (!@chmod($dir, 0o700)) {
-        fail("cannot make $dir private to uid " . getmyuid());
+        fail("cannot make $dir private to uid " . posix_geteuid());
     }
 }
 
